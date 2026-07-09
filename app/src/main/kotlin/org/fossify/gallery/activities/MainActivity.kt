@@ -1178,6 +1178,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             getProperDateTaken = true,
             dateTakens = dateTakens
         )
+        var cachedDirectoriesChanged = false
         try {
             for (directory in dirs) {
                 if (mShouldStopFetching || isDestroyed || isFinishing) {
@@ -1244,7 +1245,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     sortValue = getDirectorySortingValue(curMedia, path, name, size, mediaCnt)
                 }
 
-                setupAdapter(dirs)
+                cachedDirectoriesChanged = true
 
                 // update directories and media files in the local db, delete invalid items. Intentionally creating a new thread
                 updateDBDirectory(directory)
@@ -1280,6 +1281,10 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     directoryDB.deleteDirPath(it.path)
                 }
                 dirs.removeAll(dirsToRemove)
+                cachedDirectoriesChanged = true
+            }
+
+            if (cachedDirectoriesChanged) {
                 setupAdapter(dirs)
             }
         } catch (ignored: Exception) {
@@ -1304,6 +1309,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         }
 
         // check the remaining folders which were not cached at all yet
+        var newDirectoriesAdded = false
         for (folder in foldersToScan) {
             if (mShouldStopFetching || isDestroyed || isFinishing) {
                 return
@@ -1358,7 +1364,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 noMediaFolders = noMediaFolders
             )
             dirs.add(newDir)
-            setupAdapter(dirs)
+            newDirectoriesAdded = true
 
             // make sure to create a new thread for these operations, dont just use the common bg thread
             Thread {
@@ -1370,6 +1376,10 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 } catch (ignored: Exception) {
                 }
             }.start()
+        }
+
+        if (newDirectoriesAdded) {
+            setupAdapter(dirs)
         }
 
         mLoadedInitialPhotos = true
