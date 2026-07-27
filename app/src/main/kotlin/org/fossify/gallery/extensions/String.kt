@@ -17,7 +17,8 @@ fun String.isThisOrParentExcluded(excludedPaths: MutableSet<String>) =
 // cache which folders contain .nomedia files to avoid checking them over and over again
 fun String.shouldFolderBeVisible(
     excludedPaths: MutableSet<String>, includedPaths: MutableSet<String>, showHidden: Boolean,
-    folderNoMediaStatuses: HashMap<String, Boolean>, callback: (path: String, hasNoMedia: Boolean) -> Unit
+    folderNoMediaStatuses: HashMap<String, Boolean>, skipFileCheck: Boolean = false,
+    callback: (path: String, hasNoMedia: Boolean) -> Unit
 ): Boolean {
     if (isEmpty()) {
         return false
@@ -25,7 +26,7 @@ fun String.shouldFolderBeVisible(
 
     val file = File(this)
     val filename = file.name
-    if (filename.startsWith("img_", true) && file.isDirectory) {
+    if (!skipFileCheck && filename.startsWith("img_", true) && file.isDirectory) {
         val files = file.list()
         if (files != null) {
             if (files.any { it.contains("burst", true) }) {
@@ -40,8 +41,8 @@ fun String.shouldFolderBeVisible(
         return true
     }
 
-    val containsNoMedia = if (showHidden) {
-        false
+    val containsNoMedia = if (showHidden || skipFileCheck) {
+        folderNoMediaStatuses.getOrElse("$this/$NOMEDIA") { false }
     } else {
         folderNoMediaStatuses.getOrElse("$this/$NOMEDIA") { false } || ((!isRPlus() || isExternalStorageManager()) && File(this, NOMEDIA).exists())
     }
@@ -56,7 +57,7 @@ fun String.shouldFolderBeVisible(
         false
     } else if (!showHidden) {
         var containsNoMediaOrDot = containsNoMedia || contains("/.")
-        if (!containsNoMediaOrDot) {
+        if (!containsNoMediaOrDot && !skipFileCheck) {
             var curPath = this
             for (i in 0 until count { it == '/' } - 1) {
                 curPath = curPath.substringBeforeLast('/')
@@ -85,7 +86,7 @@ fun String.shouldFolderBeVisible(
 // recognize /sdcard/DCIM as the same folder as /storage/emulated/0/DCIM
 fun String.getDistinctPath(): String {
     return try {
-        File(this).canonicalPath.lowercase(Locale.getDefault())
+        File(this).absolutePath.lowercase(Locale.getDefault())
     } catch (e: IOException) {
         lowercase(Locale.getDefault())
     }
