@@ -13,6 +13,7 @@ import android.graphics.drawable.PictureDrawable
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Process
+import android.os.SystemClock
 import android.provider.MediaStore.Files
 import android.provider.MediaStore.Images
 import android.widget.ImageView
@@ -117,8 +118,10 @@ import org.fossify.gallery.svg.SvgSoftwareLayerSetter
 import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.nio.channels.FileChannel
 import kotlin.math.max
 import kotlin.math.min
 
@@ -146,6 +149,27 @@ val Context.dateTakensDB: DateTakensDao
     get() = GalleryDatabase.getInstance(applicationContext).DateTakensDao()
 
 val Context.recycleBin: File get() = filesDir
+
+fun Context.logPerf(message: String) {
+    try {
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val logLine = "$timestamp $message\n"
+        val logDir = getExternalFilesDir(null) ?: filesDir
+        File(logDir, "perf.log").apply {
+            parentFile?.mkdirs()
+            appendBytes(logLine.toByteArray())
+        }
+    } catch (ignored: Exception) {
+    }
+}
+
+fun Context.clearPerfLog() {
+    try {
+        val logDir = getExternalFilesDir(null) ?: filesDir
+        File(logDir, "perf.log").delete()
+    } catch (ignored: Exception) {
+    }
+}
 
 fun Context.movePinnedDirectoriesToFront(dirs: ArrayList<Directory>): ArrayList<Directory> {
     val foundFolders = ArrayList<Directory>()
@@ -842,15 +866,18 @@ fun Context.getCachedDirectories(
         } catch (ignored: Exception) {
         }
 
+        val stepStart = SystemClock.elapsedRealtime()
         val directories = try {
             directoryDB.getAll() as ArrayList<Directory>
         } catch (e: Exception) {
             ArrayList()
         }
+        logPerf("getCachedDirectories: directoryDB.getAll() returned ${directories.size} dirs in ${SystemClock.elapsedRealtime() - stepStart} ms")
 
         if (!config.showRecycleBinAtFolders) {
             directories.removeAll { it.isRecycleBin() }
         }
+        logPerf("getCachedDirectories: recycle bin removal done in ${SystemClock.elapsedRealtime() - stepStart} ms")
 
         val shouldShowHidden = config.shouldShowHidden || forceShowHidden
         val excludedPaths = if (config.temporarilyShowExcluded || forceShowExcluded) {
@@ -862,22 +889,28 @@ fun Context.getCachedDirectories(
         val includedPaths = config.includedFolders
 
         val folderNoMediaStatuses = HashMap<String, Boolean>()
+        var stepStart2 = SystemClock.elapsedRealtime()
         val noMediaFolders = getNoMediaFoldersSync()
         noMediaFolders.forEach { folder ->
             folderNoMediaStatuses["$folder/$NOMEDIA"] = true
         }
+        logPerf("getCachedDirectories: getNoMediaFoldersSync() took ${SystemClock.elapsedRealtime() - stepStart2} ms, folders=${noMediaFolders.size}")
 
+        stepStart2 = SystemClock.elapsedRealtime()
         var filteredDirectories = directories.filter {
             it.path.shouldFolderBeVisible(
                 excludedPaths = excludedPaths,
                 includedPaths = includedPaths,
                 showHidden = shouldShowHidden,
-                folderNoMediaStatuses = folderNoMediaStatuses
+                folderNoMediaStatuses = folderNoMediaStatuses,
+                skipFileCheck = true
             ) { path, hasNoMedia ->
                 folderNoMediaStatuses[path] = hasNoMedia
             }
         } as ArrayList<Directory>
+        logPerf("getCachedDirectories: shouldFolderBeVisible filtering took ${SystemClock.elapsedRealtime() - stepStart2} ms")
 
+        stepStart2 = SystemClock.elapsedRealtime()
         val filterMedia = config.filterMedia
         filteredDirectories = (when {
             getVideosOnly -> filteredDirectories.filter { it.types and TYPE_VIDEOS != 0 }
@@ -891,6 +924,7 @@ fun Context.getCachedDirectories(
                         || (filterMedia and TYPE_PORTRAITS != 0 && it.types and TYPE_PORTRAITS != 0)
             }
         }) as ArrayList<Directory>
+        logPerf("getCachedDirectories: filterMedia filtering took ${SystemClock.elapsedRealtime() - stepStart2} ms")
 
         if (shouldShowHidden) {
             val hiddenString = resources.getString(R.string.hidden)
@@ -912,10 +946,16 @@ fun Context.getCachedDirectories(
                 }
             }
         }
+        logPerf("getCachedDirectories: hidden string renaming took ${SystemClock.elapsedRealtime() - stepStart2} ms")
 
+        stepStart2 = SystemClock.elapsedRealtime()
         val clone = filteredDirectories.clone() as ArrayList<Directory>
         callback(clone.distinctBy { it.path.getDistinctPath() } as ArrayList<Directory>)
+        logPerf("getCachedDirectories: distinctBy took ${SystemClock.elapsedRealtime() - stepStart2} ms")
+        logPerf("getCachedDirectories: total done in ${SystemClock.elapsedRealtime() - stepStart} ms, returned ${clone.size} dirs")
+        stepStart2 = SystemClock.elapsedRealtime()
         removeInvalidDBDirectories(filteredDirectories)
+        logPerf("getCachedDirectories: removeInvalidDBDirectories took ${SystemClock.elapsedRealtime() - stepStart2} ms")
     }
 }
 
