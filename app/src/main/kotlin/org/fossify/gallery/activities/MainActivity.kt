@@ -160,6 +160,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         private const val PICK_WALLPAPER = 3
         private const val LAST_MEDIA_CHECK_PERIOD = 3000L
         private const val MAX_DIRS_LOAD_TIME_MS = 300000L
+        var pendingFullScan = false
     }
 
     private var mIsPickImageIntent = false
@@ -347,7 +348,14 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
 
         if (!binding.mainMenu.isSearchOpen) {
             refreshMenuItems()
-            tryLoadGallery()
+            if (pendingFullScan) {
+                pendingFullScan = false
+                config.lastFolderScanTimestamp = 0L
+                binding.directoriesGrid.adapter = null
+                getDirectories(true)
+            } else {
+                tryLoadGallery()
+            }
         }
 
         if (config.searchAllFilesByDefault) {
@@ -1470,18 +1478,12 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             }.mapTo(everShownFolders) { it.path }
 
             try {
-                // scan the internal storage from time to time for new folders
-                if (config.appRunCount == 1 || config.appRunCount % 30 == 0) {
-                    stepStart = SystemClock.elapsedRealtime()
-                    everShownFolders.addAll(getFoldersWithMedia(config.internalStoragePath))
-                    logPerf("gotDirectories: getFoldersWithMedia() took ${SystemClock.elapsedRealtime() - stepStart} ms, appRunCount=${config.appRunCount}")
-                }
-
-                // catch some extreme exceptions like too many everShownFolders for storing, shouldnt really happen
                 config.everShownFolders = everShownFolders
             } catch (e: Exception) {
                 config.everShownFolders = HashSet()
             }
+
+            config.lastFolderScanTimestamp = System.currentTimeMillis() / 1000
 
             mDirs = dirs.clone() as ArrayList<Directory>
             val totalTime = SystemClock.elapsedRealtime() - gotDirectoriesStart
@@ -1802,27 +1804,6 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             } catch (e: Exception) {
             }
         }
-    }
-
-    private fun getFoldersWithMedia(path: String): HashSet<String> {
-        val folders = HashSet<String>()
-        try {
-            val files = File(path).listFiles()
-            if (files != null) {
-                files.sortBy { !it.isDirectory }
-                for (file in files) {
-                    if (file.isDirectory && !file.startsWith("${config.internalStoragePath}/Android")) {
-                        folders.addAll(getFoldersWithMedia(file.absolutePath))
-                    } else if (file.isFile && file.isMediaFile()) {
-                        folders.add(file.parent ?: "")
-                        break
-                    }
-                }
-            }
-        } catch (ignored: Exception) {
-        }
-
-        return folders
     }
 
     override fun refreshItems() {

@@ -602,4 +602,8 @@ class Config(context: Context) : BaseConfig(context) {
     var showPermissionRationale: Boolean
         get() = prefs.getBoolean(SHOW_PERMISSION_RATIONALE, false)
         set(showPermissionRationale) = prefs.edit().putBoolean(SHOW_PERMISSION_RATIONALE, showPermissionRationale).apply()
+
+    var lastFolderScanTimestamp: Long
+        get() = prefs.getLong(LAST_FOLDER_SCAN_TS, 0L)
+        set(lastFolderScanTimestamp) = prefs.edit().putLong(LAST_FOLDER_SCAN_TS, lastFolderScanTimestamp).apply()
 }

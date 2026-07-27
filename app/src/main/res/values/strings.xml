@@ -240,6 +240,9 @@
     <string name="all_files">All files</string>
     <string name="search_all_files">Search all files instead of folders on the main screen</string>
     <string name="show_all_folders">Show a menu button for toggling Show All Folders Content quickly</string>
+    <string name="full_media_scan">Full media scan</string>
+    <string name="full_media_scan_summary">Search all storage for media folders. Use if folders are missing.</string>
+    <string name="full_media_scan_confirmation">This will scan all storage for media files and may take a while. Continue?</string>
 
     <!-- Setting sections -->
     <string name="thumbnails">Thumbnails</string>

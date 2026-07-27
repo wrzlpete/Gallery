@@ -106,6 +106,7 @@ class SettingsActivity : SimpleActivity() {
         setupEmptyRecycleBin()
         updateTextColors(binding.settingsHolder)
         setupClearCache()
+        setupFullMediaScan()
         setupExportFavorites()
         setupImportFavorites()
         setupExportSettings()
@@ -785,6 +786,16 @@ class SettingsActivity : SimpleActivity() {
                 runOnUiThread {
                     binding.settingsClearCacheSize.text = cacheDir.getProperSize(true).formatSize()
                 }
+            }
+        }
+    }
+
+    private fun setupFullMediaScan() {
+        binding.settingsFullMediaScanHolder.setOnClickListener {
+            ConfirmationDialog(this, "", R.string.full_media_scan_confirmation, org.fossify.commons.R.string.ok, org.fossify.commons.R.string.cancel) {
+                config.lastFolderScanTimestamp = 0L
+                MainActivity.pendingFullScan = true
+                finish()
             }
         }
     }

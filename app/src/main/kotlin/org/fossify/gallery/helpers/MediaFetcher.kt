@@ -81,7 +81,7 @@ class MediaFetcher(val context: Context) {
         return curMedia
     }
 
-    fun getFoldersToScan(): ArrayList<String> {
+    fun getFoldersToScan(forceFullScan: Boolean = false): ArrayList<String> {
         return try {
             val OTGPath = context.config.OTGPath
             val folders = getLatestFileFolders()
@@ -92,12 +92,23 @@ class MediaFetcher(val context: Context) {
             ).filter { context.getDoesFilePathExist(it, OTGPath) })
 
             val filterMedia = context.config.filterMedia
-            val uri = Files.getContentUri("external")
-            val projection = arrayOf(Images.Media.DATA)
-            val selection = getSelectionQuery(filterMedia)
-            val selectionArgs = getSelectionArgsQuery(filterMedia).toTypedArray()
-            val cursor = context.contentResolver.query(uri, projection, selection, selectionArgs, null)
-            folders.addAll(parseCursor(cursor!!))
+            if (filterMedia != 0) {
+                val uri = Files.getContentUri("external")
+                val projection = arrayOf(Images.Media.DATA)
+                val baseSelection = getSelectionQuery(filterMedia)
+                val baseArgs = getSelectionArgsQuery(filterMedia)
+
+                val (selection, selectionArgs) = if (forceFullScan) {
+                    baseSelection to baseArgs.toTypedArray()
+                } else {
+                    val lastScanTs = context.config.lastFolderScanTimestamp
+                    "($baseSelection) AND ${MediaStore.MediaColumns.DATE_ADDED} > ?" to
+                        (baseArgs + lastScanTs.toString()).toTypedArray()
+                }
+
+                val cursor = context.contentResolver.query(uri, projection, selection, selectionArgs, null)
+                folders.addAll(parseCursor(cursor!!))
+            }
 
             val config = context.config
             val shouldShowHidden = config.shouldShowHidden
