@@ -838,7 +838,7 @@ fun Context.getCachedDirectories(
 ) {
     ensureBackgroundThread {
         try {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_MORE_FAVORABLE)
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         } catch (ignored: Exception) {
         }
 
