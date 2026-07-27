@@ -91,6 +91,7 @@ import org.fossify.gallery.helpers.LOCATION_INTERNAL
 import org.fossify.gallery.helpers.LOCATION_OTG
 import org.fossify.gallery.helpers.LOCATION_SD
 import org.fossify.gallery.helpers.MediaFetcher
+import org.fossify.commons.helpers.isRPlus
 import org.fossify.gallery.helpers.MyWidgetProvider
 import org.fossify.gallery.helpers.PicassoRoundedCornersTransformation
 import org.fossify.gallery.helpers.RECYCLE_BIN
@@ -150,7 +151,7 @@ val Context.dateTakensDB: DateTakensDao
 
 val Context.recycleBin: File get() = filesDir
 
-const val PERF_LOGGING_ENABLED = false
+const val PERF_LOGGING_ENABLED = true
 
 fun Context.logPerf(message: String) {
     if (!PERF_LOGGING_ENABLED) return
@@ -958,8 +959,12 @@ fun Context.getCachedDirectories(
         logPerf("getCachedDirectories: distinctBy took ${SystemClock.elapsedRealtime() - stepStart2} ms")
         logPerf("getCachedDirectories: total done in ${SystemClock.elapsedRealtime() - stepStart} ms, returned ${clone.size} dirs")
         stepStart2 = SystemClock.elapsedRealtime()
-        removeInvalidDBDirectories(filteredDirectories)
-        logPerf("getCachedDirectories: removeInvalidDBDirectories took ${SystemClock.elapsedRealtime() - stepStart2} ms")
+        // On Android 11+, checkInvalidDirectories in gotDirectories already handles this
+        // with a MediaStore batch query. Skip the redundant per-directory FUSE check here.
+        if (!isRPlus()) {
+            removeInvalidDBDirectories(filteredDirectories)
+        }
+        logPerf("getCachedDirectories: removeInvalidDBDirectories took ${SystemClock.elapsedRealtime() - stepStart2} ms${if (isRPlus()) " (skipped on R+)" else ""}")
     }
 }
 
@@ -1061,15 +1066,38 @@ fun Context.getCachedMedia(
 fun Context.removeInvalidDBDirectories(dirs: ArrayList<Directory>? = null) {
     val dirsToCheck = dirs ?: directoryDB.getAll()
     val OTGPath = config.OTGPath
-    dirsToCheck.filter {
-        !it.areFavorites()
-                && !it.isRecycleBin()
-                && !getDoesFilePathExist(it.path, OTGPath)
-                && it.path != config.tempFolderPath
-    }.forEach {
-        try {
-            directoryDB.deleteDirPath(it.path)
-        } catch (ignored: Exception) {
+
+    if (isRPlus()) {
+        // On Android 11+, use a single MediaStore batch query instead of per-directory FUSE calls
+        val mediaStoreFolders = MediaFetcher(this).getMediaStoreFolderInfo(emptySet()).allParentPaths
+        if (mediaStoreFolders.isEmpty()) {
+            // Safety: skip if query failed
+            return
+        }
+        val includedFolders = config.includedFolders
+        dirsToCheck.filter {
+            !it.areFavorites()
+                    && !it.isRecycleBin()
+                    && it.path != config.tempFolderPath
+                    && it.path !in includedFolders
+                    && it.path.lowercase(Locale.getDefault()) !in mediaStoreFolders
+        }.forEach {
+            try {
+                directoryDB.deleteDirPath(it.path)
+            } catch (ignored: Exception) {
+            }
+        }
+    } else {
+        dirsToCheck.filter {
+            !it.areFavorites()
+                    && !it.isRecycleBin()
+                    && !getDoesFilePathExist(it.path, OTGPath)
+                    && it.path != config.tempFolderPath
+        }.forEach {
+            try {
+                directoryDB.deleteDirPath(it.path)
+            } catch (ignored: Exception) {
+            }
         }
     }
 }

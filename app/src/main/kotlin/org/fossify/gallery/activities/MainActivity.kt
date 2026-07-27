@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.SystemClock
 import android.provider.MediaStore
@@ -13,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.RelativeLayout
 import android.widget.Toast
 import androidx.recyclerview.widget.RecyclerView
+import java.util.Locale
 import org.fossify.commons.dialogs.CreateNewFolderDialog
 import org.fossify.commons.dialogs.FilePickerDialog
 import org.fossify.commons.dialogs.RadioGroupDialog
@@ -665,7 +667,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         val getVideos = mIsPickVideoIntent || mIsGetVideoContentIntent
 
         getCachedDirectories(getVideos && !getImages, getImages && !getVideos) {
-            gotDirectories(addTempFolderIfNeeded(it), generation)
+            gotDirectories(addTempFolderIfNeeded(it), generation, forceRestart)
         }
     }
 
@@ -1125,9 +1127,10 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         }
     }
 
-    private fun gotDirectories(newDirs: ArrayList<Directory>, generation: Long = 0) {
+    private fun gotDirectories(newDirs: ArrayList<Directory>, generation: Long = 0, forceFullScan: Boolean = false) {
         val gotDirectoriesStart = SystemClock.elapsedRealtime()
-        logPerf("gotDirectories: started with ${newDirs.size} cached dirs (generation=$generation)")
+        logPerf("gotDirectories: started with ${newDirs.size} cached dirs (generation=$generation, forceFullScan=$forceFullScan)")
+        logPerf("gotDirectories: isRPlus=${isRPlus()}, isExternalStorageManager=${isExternalStorageManager()}, SDK=${Build.VERSION.SDK_INT}")
 
         try {
             // if hidden item showing is disabled but all Favorite items are hidden, hide the Favorites folder
@@ -1170,63 +1173,118 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val getProperFileSize = config.directorySorting and SORT_BY_SIZE != 0
             val dirPathsToRemove = ArrayList<String>()
 
+            // Check for recent media changes first - this determines whether we need a full scan
             var stepStart = SystemClock.elapsedRealtime()
-            val lastModifieds = mLastMediaFetcher!!.getLastModifieds()
-            logPerf("gotDirectories: getLastModifieds() took ${SystemClock.elapsedRealtime() - stepStart} ms, size=${lastModifieds.size}")
+            val foldersWithRecentMedia = mLastMediaFetcher!!.getFoldersWithRecentMedia()
+            logPerf("gotDirectories: getFoldersWithRecentMedia() took ${SystemClock.elapsedRealtime() - stepStart} ms, found ${foldersWithRecentMedia.size} folders")
 
-            stepStart = SystemClock.elapsedRealtime()
-            val dateTakens = mLastMediaFetcher!!.getDateTakens()
-            logPerf("gotDirectories: getDateTakens() took ${SystemClock.elapsedRealtime() - stepStart} ms, size=${dateTakens.size}")
+            if (!forceFullScan && foldersWithRecentMedia.isEmpty()) {
+                logPerf("gotDirectories: no media changes detected, skipping full scan")
+                mLoadedInitialPhotos = true
+                if (config.appRunCount > 1) {
+                    checkLastMediaChanged()
+                }
+                config.lastFolderScanTimestamp = System.currentTimeMillis() / 1000
+                mDirs = dirs.clone() as ArrayList<Directory>
+                val totalTime = SystemClock.elapsedRealtime() - gotDirectoriesStart
+                logPerf("gotDirectories: finished in ${totalTime} ms (early exit)")
+                runOnUiThread {
+                    binding.directoriesRefreshLayout.isRefreshing = false
+                    checkPlaceholderVisibility(dirs)
+                }
+                if (generation > 0 && generation == mScanGeneration) {
+                    mIsGettingDirs = false
+                    mShouldStopFetching = false
+                    mDirsLoadStartTime = 0L
+                    if (mPendingRestart) {
+                        logPerf("gotDirectories: pending restart, starting new scan")
+                        mPendingRestart = false
+                        getDirectories()
+                    }
+                }
+                return
+            }
 
-            if (
-                config.showRecycleBinAtFolders
-                && !config.showRecycleBinLast
-                && !dirs.map { it.path }.contains(RECYCLE_BIN)
-            ) {
-                try {
-                    if (mediaDB.getDeletedMediaCount() > 0) {
-                        val recycleBin = Directory().apply {
-                            path = RECYCLE_BIN
-                            name = getString(org.fossify.commons.R.string.recycle_bin)
+            val lastModifieds: HashMap<String, Long>
+            val dateTakens: HashMap<String, Long>
+            val android11Files: HashMap<String, ArrayList<Medium>>?
+            val onlyVersionChanged = foldersWithRecentMedia.size == 1 &&
+                foldersWithRecentMedia.contains(MediaFetcher.MEDIA_STORE_CHANGED_SENTINEL)
+
+            if ((forceFullScan && foldersWithRecentMedia.isEmpty()) || onlyVersionChanged) {
+                logPerf("gotDirectories: skipping heavy queries (${if (onlyVersionChanged) "version-only change" else "no changes"})")
+                lastModifieds = HashMap()
+                dateTakens = HashMap()
+                android11Files = null
+            } else {
+                stepStart = SystemClock.elapsedRealtime()
+                lastModifieds = mLastMediaFetcher!!.getLastModifieds()
+                logPerf("gotDirectories: getLastModifieds() took ${SystemClock.elapsedRealtime() - stepStart} ms, size=${lastModifieds.size}")
+
+                stepStart = SystemClock.elapsedRealtime()
+                dateTakens = mLastMediaFetcher!!.getDateTakens()
+                logPerf("gotDirectories: getDateTakens() took ${SystemClock.elapsedRealtime() - stepStart} ms, size=${dateTakens.size}")
+
+                if (
+                    config.showRecycleBinAtFolders
+                    && !config.showRecycleBinLast
+                    && !dirs.map { it.path }.contains(RECYCLE_BIN)
+                ) {
+                    try {
+                        if (mediaDB.getDeletedMediaCount() > 0) {
+                            val recycleBin = Directory().apply {
+                                path = RECYCLE_BIN
+                                name = getString(org.fossify.commons.R.string.recycle_bin)
+                                location = LOCATION_INTERNAL
+                            }
+
+                            dirs.add(0, recycleBin)
+                        }
+                    } catch (ignored: Exception) {
+                    }
+                }
+
+                if (dirs.map { it.path }.contains(FAVORITES)) {
+                    if (mediaDB.getFavoritesCount() > 0) {
+                        val favorites = Directory().apply {
+                            path = FAVORITES
+                            name = getString(org.fossify.commons.R.string.favorites)
                             location = LOCATION_INTERNAL
                         }
 
-                        dirs.add(0, recycleBin)
+                        dirs.add(0, favorites)
                     }
-                } catch (ignored: Exception) {
                 }
+
+                // fetch files from MediaStore only, unless the app has the MANAGE_EXTERNAL_STORAGE permission on Android 11+
+                stepStart = SystemClock.elapsedRealtime()
+                android11Files = mLastMediaFetcher?.getAndroid11FolderMedia(
+                    isPickImage = getImagesOnly,
+                    isPickVideo = getVideosOnly,
+                    favoritePaths = favoritePaths,
+                    getFavoritePathsOnly = false,
+                    getProperDateTaken = true,
+                    dateTakens = dateTakens
+                )
+                logPerf("gotDirectories: getAndroid11FolderMedia() took ${SystemClock.elapsedRealtime() - stepStart} ms, folders=${android11Files?.size ?: 0}")
             }
 
-            if (dirs.map { it.path }.contains(FAVORITES)) {
-                if (mediaDB.getFavoritesCount() > 0) {
-                    val favorites = Directory().apply {
-                        path = FAVORITES
-                        name = getString(org.fossify.commons.R.string.favorites)
-                        location = LOCATION_INTERNAL
-                    }
-
-                    dirs.add(0, favorites)
-                }
-            }
-
-            // fetch files from MediaStore only, unless the app has the MANAGE_EXTERNAL_STORAGE permission on Android 11+
-            stepStart = SystemClock.elapsedRealtime()
-            val android11Files = mLastMediaFetcher?.getAndroid11FolderMedia(
-                isPickImage = getImagesOnly,
-                isPickVideo = getVideosOnly,
-                favoritePaths = favoritePaths,
-                getFavoritePathsOnly = false,
-                getProperDateTaken = true,
-                dateTakens = dateTakens
-            )
-            logPerf("gotDirectories: getAndroid11FolderMedia() took ${SystemClock.elapsedRealtime() - stepStart} ms, folders=${android11Files?.size ?: 0}")
             var cachedDirectoriesChanged = false
+            var cachedDirsSkipped = 0
             stepStart = SystemClock.elapsedRealtime()
             logPerf("gotDirectories: starting cached directory refresh loop for ${dirs.size} dirs")
             try {
                 for (directory in dirs) {
                     if (mShouldStopFetching || isDestroyed || isFinishing) {
                         return
+                    }
+
+                    val folderPath = directory.path
+                    if (folderPath != FAVORITES && folderPath != RECYCLE_BIN && folderPath != tempFolderPath) {
+                        if (folderPath !in foldersWithRecentMedia) {
+                            cachedDirsSkipped++
+                            continue
+                        }
                     }
 
                     val folderStart = SystemClock.elapsedRealtime()
@@ -1339,11 +1397,55 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 }
             } catch (ignored: Exception) {
             }
-            logPerf("gotDirectories: cached directory refresh loop took ${SystemClock.elapsedRealtime() - stepStart} ms")
+            logPerf("gotDirectories: cached directory refresh loop took ${SystemClock.elapsedRealtime() - stepStart} ms, skipped $cachedDirsSkipped/${dirs.size} dirs")
 
             stepStart = SystemClock.elapsedRealtime()
-            val foldersToScan = mLastMediaFetcher!!.getFoldersToScan()
-            logPerf("gotDirectories: getFoldersToScan() took ${SystemClock.elapsedRealtime() - stepStart} ms, found ${foldersToScan.size} folders")
+            val knownFolderPaths = directoryDB.getAll().map { it.path }.toSet()
+            val mediaStoreFolderInfo = if (forceFullScan || foldersWithRecentMedia.isNotEmpty()) {
+                if (isRPlus()) {
+                    mLastMediaFetcher!!.getMediaStoreFolderInfo(
+                        knownFolders = knownFolderPaths,
+                        collectMedia = true,
+                        isPickImage = getImagesOnly,
+                        isPickVideo = getVideosOnly,
+                        favoritePaths = favoritePaths
+                    )
+                } else {
+                    MediaFetcher.MediaStoreFolderInfo(HashSet(), mLastMediaFetcher!!.getNewFoldersViaFilesystem(knownFolderPaths), null)
+                }
+            } else {
+                MediaFetcher.MediaStoreFolderInfo(HashSet(), ArrayList(), null)
+            }
+            val mediaStoreAllPaths = mediaStoreFolderInfo.allParentPaths
+            val newFoldersFromFS = mediaStoreFolderInfo.newFolders
+            val mediaByFolder = mediaStoreFolderInfo.mediaByFolder
+            logPerf("gotDirectories: new folder discovery took ${SystemClock.elapsedRealtime() - stepStart} ms, found ${newFoldersFromFS.size} new folders")
+
+            stepStart = SystemClock.elapsedRealtime()
+            val foldersToScan = ArrayList<String>()
+            foldersToScan.addAll(newFoldersFromFS)
+            foldersWithRecentMedia.forEach { folder ->
+                if (folder != MediaFetcher.MEDIA_STORE_CHANGED_SENTINEL && folder !in knownFolderPaths && folder !in foldersToScan) {
+                    foldersToScan.add(folder)
+                }
+            }
+            mLastMediaFetcher!!.getLatestFileFolders().forEach { folder ->
+                if (folder !in knownFolderPaths && folder !in foldersToScan) {
+                    foldersToScan.add(folder)
+                }
+            }
+            logPerf("gotDirectories: folder discovery (FS + recent + latest) took ${SystemClock.elapsedRealtime() - stepStart} ms, found ${foldersToScan.size} new folders")
+
+            // Remove invalid directories BEFORE the new folder loop to avoid transient state
+            // where both old (pre-rename) and new folders exist simultaneously, causing position shifts
+            stepStart = SystemClock.elapsedRealtime()
+            if (forceFullScan || foldersWithRecentMedia.isNotEmpty() || newFoldersFromFS.isNotEmpty()) {
+                checkInvalidDirectories(dirs, if (isRPlus()) mediaStoreAllPaths else null)
+            } else {
+                logPerf("gotDirectories: skipping checkInvalidDirectories() - no media changes detected")
+            }
+            logPerf("gotDirectories: checkInvalidDirectories() took ${SystemClock.elapsedRealtime() - stepStart} ms")
+
             foldersToScan.remove(FAVORITES)
             foldersToScan.add(0, FAVORITES)
             if (config.showRecycleBinAtFolders) {
@@ -1384,23 +1486,37 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                         || grouping and GROUP_BY_LAST_MODIFIED_DAILY != 0
                         || grouping and GROUP_BY_LAST_MODIFIED_MONTHLY != 0
 
-                val newMedia = mLastMediaFetcher!!.getFilesFrom(
-                    curPath = folder,
-                    isPickImage = getImagesOnly,
-                    isPickVideo = getVideosOnly,
-                    getProperDateTaken = getProperDateTaken,
-                    getProperLastModified = getProperLastModified,
-                    getProperFileSize = getProperFileSize,
-                    favoritePaths = favoritePaths,
-                    getVideoDurations = false,
-                    lastModifieds = lastModifieds,
-                    dateTakens = dateTakens,
-                    android11Files = android11Files
-                )
+                // Use pre-computed media from getMediaStoreFolderInfo when available (Android 11+)
+                // This avoids per-folder getFilesFrom() calls that do FUSE listFiles() or per-folder MediaStore queries
+                val newMedia = if (mediaByFolder != null) {
+                    val folderLower = folder.lowercase(Locale.getDefault())
+                    val media = mediaByFolder[folderLower] ?: ArrayList()
+                    if (media.isNotEmpty()) {
+                        mLastMediaFetcher!!.sortMedia(media, sorting)
+                    }
+                    media
+                } else {
+                    mLastMediaFetcher!!.getFilesFrom(
+                        curPath = folder,
+                        isPickImage = getImagesOnly,
+                        isPickVideo = getVideosOnly,
+                        getProperDateTaken = getProperDateTaken,
+                        getProperLastModified = getProperLastModified,
+                        getProperFileSize = getProperFileSize,
+                        favoritePaths = favoritePaths,
+                        getVideoDurations = false,
+                        lastModifieds = lastModifieds,
+                        dateTakens = dateTakens,
+                        android11Files = android11Files
+                    )
+                }
 
                 if (newMedia.isEmpty()) {
+                    logPerf("gotDirectories: new folder '$folder' has 0 media, skipping")
                     continue
                 }
+
+                logPerf("gotDirectories: new folder '$folder' has ${newMedia.size} media")
 
                 if (isPlaceholderVisible) {
                     isPlaceholderVisible = false
@@ -1456,15 +1572,6 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 checkLastMediaChanged()
             }
 
-            runOnUiThread {
-                binding.directoriesRefreshLayout.isRefreshing = false
-                checkPlaceholderVisibility(dirs)
-            }
-
-            stepStart = SystemClock.elapsedRealtime()
-            checkInvalidDirectories(dirs)
-            logPerf("gotDirectories: checkInvalidDirectories() took ${SystemClock.elapsedRealtime() - stepStart} ms")
-
             if (mDirs.size > 50) {
                 excludeSpamFolders()
             }
@@ -1491,6 +1598,11 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 logPerf("SLOW START: gotDirectories finished in ${totalTime} ms")
             } else {
                 logPerf("gotDirectories: finished in ${totalTime} ms")
+            }
+
+            runOnUiThread {
+                binding.directoriesRefreshLayout.isRefreshing = false
+                checkPlaceholderVisibility(dirs)
             }
         } finally {
             if (generation > 0 && generation == mScanGeneration) {
@@ -1647,30 +1759,59 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         binding.directoriesFastscroller.setScrollVertically(!scrollHorizontally)
     }
 
-    private fun checkInvalidDirectories(dirs: ArrayList<Directory>) {
+    private fun checkInvalidDirectories(dirs: ArrayList<Directory>, mediaStoreFolders: HashSet<String>? = null) {
         val invalidDirs = ArrayList<Directory>()
         val OTGPath = config.OTGPath
+        val checkStart = SystemClock.elapsedRealtime()
+
+        // mediaStoreFolders is pre-computed by gotDirectories on Android 11+ to avoid a second query
+        val mediaStoreFoldersResolved = if (isRPlus() && mediaStoreFolders == null) {
+            mLastMediaFetcher!!.getMediaStoreFolderInfo(emptySet()).allParentPaths
+        } else {
+            mediaStoreFolders
+        }
+        logPerf("checkInvalidDirectories: mediaStoreFolders has ${mediaStoreFoldersResolved?.size ?: 0} folders (took ${SystemClock.elapsedRealtime() - checkStart} ms)")
+
+        // Safety: if MediaStore query failed/returned empty, skip invalidation on Android 11+
+        val skipMediaStoreCheck = mediaStoreFoldersResolved != null && mediaStoreFoldersResolved.isEmpty()
+        if (skipMediaStoreCheck) {
+            logPerf("checkInvalidDirectories: MediaStore query returned empty, skipping invalidation to avoid false positives")
+        }
+
+        val includedFolders = config.includedFolders
         dirs.filter { !it.areFavorites() && !it.isRecycleBin() }.forEach {
-            if (!getDoesFilePathExist(it.path, OTGPath)) {
-                invalidDirs.add(it)
-            } else if (it.path != config.tempFolderPath && (!isRPlus() || isExternalStorageManager())) {
-                // avoid calling file.list() or listfiles() on Android 11+, it became way too slow
-                val children = if (isPathOnOTG(it.path)) {
-                    getOTGFolderChildrenNames(it.path)
-                } else {
-                    File(it.path).list()?.asList()
-                }
-
-                val hasMediaFile = children?.any {
-                    it != null && (
-                            it.isMediaFile()
-                                    || (it.startsWith("img_", true)
-                                    && File(it).isDirectory)
-                            )
-                } == true
-
-                if (!hasMediaFile) {
+            if (isRPlus()) {
+                if (skipMediaStoreCheck) return@forEach
+                // On Android 11+, avoid all FUSE calls.
+                // Use MediaStore batch query to check if folder still has media.
+                // Skip included folders — they may not be in MediaStore.
+                if (it.path != config.tempFolderPath &&
+                    it.path !in includedFolders &&
+                    it.path.lowercase(Locale.getDefault()) !in mediaStoreFoldersResolved!!
+                ) {
                     invalidDirs.add(it)
+                }
+            } else {
+                if (!getDoesFilePathExist(it.path, OTGPath)) {
+                    invalidDirs.add(it)
+                } else if (it.path != config.tempFolderPath) {
+                    val children = if (isPathOnOTG(it.path)) {
+                        getOTGFolderChildrenNames(it.path)
+                    } else {
+                        File(it.path).list()?.asList()
+                    }
+
+                    val hasMediaFile = children?.any {
+                        it != null && (
+                                it.isMediaFile()
+                                        || (it.startsWith("img_", true)
+                                        && File(it).isDirectory)
+                                )
+                    } == true
+
+                    if (!hasMediaFile) {
+                        invalidDirs.add(it)
+                    }
                 }
             }
         }

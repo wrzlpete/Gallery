@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.BaseColumns
 import android.provider.MediaStore
 import android.provider.MediaStore.Files
@@ -24,6 +25,16 @@ import java.util.Locale
 
 class MediaFetcher(val context: Context) {
     var shouldStop = false
+
+    companion object {
+        const val MEDIA_STORE_CHANGED_SENTINEL = "__media_store_changed__"
+    }
+
+    data class MediaStoreFolderInfo(
+        val allParentPaths: HashSet<String>,
+        val newFolders: ArrayList<String>,
+        val mediaByFolder: HashMap<String, ArrayList<Medium>>?
+    )
 
     // on Android 11 we fetch all files at once from MediaStore and have it split by folder, use it if available
     fun getFilesFrom(
@@ -98,10 +109,28 @@ class MediaFetcher(val context: Context) {
                 val baseSelection = getSelectionQuery(filterMedia)
                 val baseArgs = getSelectionArgsQuery(filterMedia)
 
-                val (selection, selectionArgs) = if (forceFullScan) {
+                val lastScanTs = context.config.lastFolderScanTimestamp
+
+                val mediaStoreChanged = if (isRPlus()) {
+                    val currentVersion = try {
+                        MediaStore.getVersion(context, MediaStore.VOLUME_EXTERNAL)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    val savedVersion = context.config.mediaStoreVersion
+                    if (currentVersion != null && currentVersion != savedVersion) {
+                        context.config.mediaStoreVersion = currentVersion
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+
+                val (selection, selectionArgs) = if (forceFullScan || mediaStoreChanged) {
                     baseSelection to baseArgs.toTypedArray()
                 } else {
-                    val lastScanTs = context.config.lastFolderScanTimestamp
                     "($baseSelection) AND ${MediaStore.MediaColumns.DATE_ADDED} > ?" to
                         (baseArgs + lastScanTs.toString()).toTypedArray()
                 }
@@ -148,7 +177,373 @@ class MediaFetcher(val context: Context) {
         }
     }
 
-    private fun getLatestFileFolders(): LinkedHashSet<String> {
+    fun getFoldersWithRecentMedia(): HashSet<String> {
+        val result = HashSet<String>()
+        try {
+            val filterMedia = context.config.filterMedia
+            if (filterMedia == 0) return result
+
+            val lastScanTs = context.config.lastFolderScanTimestamp
+
+            val uri = Files.getContentUri("external")
+            val projection = arrayOf(Images.Media.DATA)
+            val baseSelection = getSelectionQuery(filterMedia)
+            val baseArgs = getSelectionArgsQuery(filterMedia)
+
+            val selection = "($baseSelection) AND ${MediaStore.MediaColumns.DATE_ADDED} > ?"
+            val selectionArgs = (baseArgs + lastScanTs.toString()).toTypedArray()
+
+            context.queryCursor(uri, projection, selection, selectionArgs) { cursor ->
+                val path = cursor.getStringValue(Images.Media.DATA) ?: return@queryCursor
+                result.add(path.getParentPath())
+            }
+
+            if (result.isEmpty() && isRPlus()) {
+                val currentVersion = try {
+                    MediaStore.getVersion(context, MediaStore.VOLUME_EXTERNAL)
+                } catch (e: Exception) {
+                    null
+                }
+                val savedVersion = context.config.mediaStoreVersion
+                if (currentVersion != null && currentVersion != savedVersion) {
+                    context.config.mediaStoreVersion = currentVersion
+                    result.add(MEDIA_STORE_CHANGED_SENTINEL)
+                }
+            }
+        } catch (ignored: Exception) {
+        }
+        return result
+    }
+
+    fun getNewFoldersViaFilesystem(knownFolders: Set<String>): ArrayList<String> {
+        val result = ArrayList<String>()
+        val overallStart = SystemClock.elapsedRealtime()
+        try {
+            val everShownFolders = context.config.everShownFolders
+            val knownLower = knownFolders.map { it.lowercase(Locale.getDefault()) }.toHashSet()
+            val excludedPaths = if (context.config.temporarilyShowExcluded) HashSet() else context.config.excludedFolders
+            val includedPaths = context.config.includedFolders
+            val shouldShowHidden = context.config.shouldShowHidden
+            val filterMedia = context.config.filterMedia
+
+            val parentDirs = everShownFolders
+                .mapNotNull { it.getParentPath() }
+                .filter { it.isNotEmpty() && it != "/" }
+                .distinct()
+                .filter { parentDir ->
+                    val parentParent = parentDir.getParentPath()
+                    parentParent.isEmpty() || parentParent == "/" ||
+                        parentParent == context.internalStoragePath ||
+                        parentParent == context.sdCardPath ||
+                        parentParent == context.otgPath
+                }
+
+            context.logPerf("getNewFoldersViaFilesystem: ${parentDirs.size} parent dirs from ${everShownFolders.size} everShownFolders")
+
+            var listFilesCount = 0
+            var folderHasMediaCount = 0
+            var slowListFiles = ArrayList<Pair<String, Long>>()
+
+            for (parentDir in parentDirs) {
+                if (shouldStop) break
+                val parentFile = File(parentDir)
+                val listStart = SystemClock.elapsedRealtime()
+                val children = parentFile.listFiles() ?: continue
+                val listTime = SystemClock.elapsedRealtime() - listStart
+                listFilesCount++
+                if (listTime > 500) {
+                    slowListFiles.add(parentDir to listTime)
+                }
+                for (child in children) {
+                    if (shouldStop) break
+                    if (!child.isDirectory) continue
+                    val childPath = child.absolutePath
+                    if (childPath.lowercase(Locale.getDefault()) in knownLower) continue
+                    if (!shouldShowHidden && child.name.startsWith('.')) continue
+                    if (excludedPaths.any { childPath.startsWith(it) }) continue
+                    if (result.any { it.lowercase(Locale.getDefault()) == childPath.lowercase(Locale.getDefault()) }) continue
+                    val fhmStart = SystemClock.elapsedRealtime()
+                    if (!folderHasMedia(child, filterMedia, shouldShowHidden)) continue
+                    folderHasMediaCount++
+                    val fhmTime = SystemClock.elapsedRealtime() - fhmStart
+                    if (fhmTime > 500) {
+                        slowListFiles.add("$childPath (folderHasMedia)" to fhmTime)
+                    }
+                    result.add(childPath)
+                }
+            }
+
+            for (includedPath in includedPaths) {
+                if (shouldStop) break
+                val incFile = File(includedPath)
+                if (incFile.isDirectory) {
+                    val incLower = includedPath.lowercase(Locale.getDefault())
+                    if (incLower !in knownLower && !result.any { it.lowercase(Locale.getDefault()) == incLower }) {
+                        if (folderHasMedia(incFile, filterMedia, shouldShowHidden)) {
+                            result.add(includedPath)
+                        }
+                    }
+                    val listStart = SystemClock.elapsedRealtime()
+                    val children = incFile.listFiles() ?: continue
+                    val listTime = SystemClock.elapsedRealtime() - listStart
+                    listFilesCount++
+                    if (listTime > 500) {
+                        slowListFiles.add("$includedPath (included)" to listTime)
+                    }
+                    for (child in children) {
+                        if (shouldStop) break
+                        if (!child.isDirectory) continue
+                        val childPath = child.absolutePath
+                        if (childPath.lowercase(Locale.getDefault()) in knownLower) continue
+                        if (!shouldShowHidden && child.name.startsWith('.')) continue
+                        if (excludedPaths.any { childPath.startsWith(it) }) continue
+                        if (result.any { it.lowercase(Locale.getDefault()) == childPath.lowercase(Locale.getDefault()) }) continue
+                        val fhmStart = SystemClock.elapsedRealtime()
+                        if (!folderHasMedia(child, filterMedia, shouldShowHidden)) continue
+                        folderHasMediaCount++
+                        val fhmTime = SystemClock.elapsedRealtime() - fhmStart
+                        if (fhmTime > 500) {
+                            slowListFiles.add("$childPath (included folderHasMedia)" to fhmTime)
+                        }
+                        result.add(childPath)
+                    }
+                }
+            }
+
+            context.logPerf("getNewFoldersViaFilesystem: $listFilesCount listFiles() calls, $folderHasMediaCount folderHasMedia() calls, ${slowListFiles.size} slow (>500ms)")
+            slowListFiles.sortedByDescending { it.second }.take(10).forEach {
+                context.logPerf("getNewFoldersViaFilesystem: SLOW ${it.first} took ${it.second} ms")
+            }
+        } catch (ignored: Exception) {
+        }
+        context.logPerf("getNewFoldersViaFilesystem: total took ${SystemClock.elapsedRealtime() - overallStart} ms, found ${result.size} new folders")
+        return result
+    }
+
+    private fun folderHasMedia(folder: File, filterMedia: Int, showHidden: Boolean): Boolean {
+        val files = folder.listFiles() ?: return false
+        return files.any { file ->
+            if (!showHidden && file.name.startsWith('.')) return@any false
+            val path = file.absolutePath
+            val isImage = path.isImageFast()
+            val isVideo = if (isImage) false else path.isVideoFast()
+            val isGif = if (isImage || isVideo) false else path.isGif()
+            val isRaw = if (isImage || isVideo || isGif) false else path.isRawFast()
+            val isSvg = if (isImage || isVideo || isGif || isRaw) false else path.isSvg()
+            (isImage && filterMedia and TYPE_IMAGES != 0) ||
+                (isVideo && filterMedia and TYPE_VIDEOS != 0) ||
+                (isGif && filterMedia and TYPE_GIFS != 0) ||
+                (isRaw && filterMedia and TYPE_RAWS != 0) ||
+                (isSvg && filterMedia and TYPE_SVGS != 0)
+        }
+    }
+
+    fun getMediaStoreFolderInfo(
+        knownFolders: Set<String>,
+        collectMedia: Boolean = false,
+        isPickImage: Boolean = false,
+        isPickVideo: Boolean = false,
+        favoritePaths: ArrayList<String> = ArrayList()
+    ): MediaStoreFolderInfo {
+        val allParentPaths = HashSet<String>()
+        val newFolders = ArrayList<String>()
+        val mediaByFolder = if (collectMedia) HashMap<String, ArrayList<Medium>>() else null
+        val start = SystemClock.elapsedRealtime()
+        try {
+            val filterMedia = context.config.filterMedia
+            if (filterMedia == 0) {
+                context.logPerf("getMediaStoreFolderInfo: filterMedia is 0, returning empty")
+                return MediaStoreFolderInfo(allParentPaths, newFolders, mediaByFolder)
+            }
+
+            val knownLower = knownFolders.map { it.lowercase(Locale.getDefault()) }.toHashSet()
+            val showHidden = context.config.shouldShowHidden
+            val uri = Files.getContentUri("external")
+            val baseSelection = getSelectionQuery(filterMedia)
+            val baseArgs = getSelectionArgsQuery(filterMedia)
+
+            // Split-query optimization: when knownFolders is non-empty, use a fast DATA-only query
+            // to discover all parent paths and new folders, then a targeted 7-column query for just
+            // the new folders' media. When knownFolders is empty (first launch/DB reset), use the
+            // original single 7-column query since all folders are "new".
+            val useSplitQuery = collectMedia && knownFolders.isNotEmpty()
+
+            if (useSplitQuery) {
+                // Query 1: DATA-only to find parent paths and new folders (fast)
+                val dataProjection = arrayOf(Images.Media.DATA)
+                context.logPerf("getMediaStoreFolderInfo: split query 1 (DATA-only), selection length=${baseSelection.length}, args=${baseArgs.size}")
+                val cursor1 = context.contentResolver.query(uri, dataProjection, "($baseSelection)", baseArgs.toTypedArray(), null)
+                cursor1?.use {
+                    while (it.moveToNext()) {
+                        if (shouldStop) break
+                        val path = it.getStringValue(Images.Media.DATA) ?: continue
+                        val parent = path.getParentPath()
+                        val parentLower = parent.lowercase(Locale.getDefault())
+                        allParentPaths.add(parentLower)
+                        if (parentLower !in knownLower && parent !in newFolders) {
+                            newFolders.add(parent)
+                        }
+                    }
+                }
+                context.logPerf("getMediaStoreFolderInfo: query 1 took ${SystemClock.elapsedRealtime() - start} ms, found ${allParentPaths.size} total, ${newFolders.size} new")
+
+                // Query 2: targeted 7-column query for just the new folders
+                if (newFolders.isNotEmpty() && mediaByFolder != null) {
+                    val mediaProjection = arrayOf(
+                        Images.Media._ID,
+                        Images.Media.DISPLAY_NAME,
+                        Images.Media.DATA,
+                        Images.Media.DATE_MODIFIED,
+                        Images.Media.DATE_TAKEN,
+                        Images.Media.SIZE,
+                        MediaStore.MediaColumns.DURATION
+                    )
+                    val newFolderLowers = newFolders.map { it.lowercase(Locale.getDefault()) }
+                    val likeSelection = newFolderLowers.joinToString(" OR ") { "${Images.Media.DATA} LIKE ?" }
+                    val likeArgs = newFolderLowers.map { "$it/%" }.toTypedArray()
+                    val fullSelection = "($baseSelection) AND ($likeSelection)"
+                    val fullArgs = baseArgs + likeArgs.toList()
+
+                    val query2Start = SystemClock.elapsedRealtime()
+                    context.logPerf("getMediaStoreFolderInfo: split query 2 (targeted), folders=${newFolders.size}")
+                    val cursor2 = context.contentResolver.query(uri, mediaProjection, fullSelection, fullArgs.toTypedArray(), null)
+                    cursor2?.use {
+                        while (it.moveToNext()) {
+                            if (shouldStop) break
+                            val path = it.getStringValue(Images.Media.DATA) ?: continue
+                            val parent = path.getParentPath()
+                            val parentLower = parent.lowercase(Locale.getDefault())
+                            if (parentLower !in newFolderLowers) continue
+
+                            val filename = it.getStringValue(Images.Media.DISPLAY_NAME) ?: continue
+                            if (!showHidden && filename.startsWith('.')) continue
+
+                            val isImage = path.isImageFast()
+                            val isVideo = if (isImage) false else path.isVideoFast()
+                            val isGif = if (isImage || isVideo) false else path.isGif()
+                            val isRaw = if (isImage || isVideo || isGif) false else path.isRawFast()
+                            val isSvg = if (isImage || isVideo || isGif || isRaw) false else path.isSvg()
+
+                            if (!isImage && !isVideo && !isGif && !isRaw && !isSvg) continue
+                            if (isVideo && (isPickImage || filterMedia and TYPE_VIDEOS == 0)) continue
+                            if (isImage && (isPickVideo || filterMedia and TYPE_IMAGES == 0)) continue
+                            if (isGif && filterMedia and TYPE_GIFS == 0) continue
+                            if (isRaw && filterMedia and TYPE_RAWS == 0) continue
+                            if (isSvg && filterMedia and TYPE_SVGS == 0) continue
+
+                            val size = it.getLongValue(Images.Media.SIZE)
+                            if (size <= 0L) continue
+
+                            val type = when {
+                                isVideo -> TYPE_VIDEOS
+                                isGif -> TYPE_GIFS
+                                isRaw -> TYPE_RAWS
+                                isSvg -> TYPE_SVGS
+                                else -> TYPE_IMAGES
+                            }
+
+                            val mediaStoreId = it.getLongValue(Images.Media._ID)
+                            val lastModified = it.getLongValue(Images.Media.DATE_MODIFIED) * 1000
+                            var dateTaken = it.getLongValue(Images.Media.DATE_TAKEN)
+                            if (dateTaken == 0L) dateTaken = lastModified
+                            val videoDuration = Math.round(it.getIntValue(MediaStore.MediaColumns.DURATION) / 1000.toDouble()).toInt()
+                            val isFavorite = favoritePaths.contains(path)
+                            val medium = Medium(null, filename, path, parent, lastModified, dateTaken, size, type, videoDuration, isFavorite, 0L, mediaStoreId)
+
+                            val existing = mediaByFolder[parentLower]
+                            if (existing == null) {
+                                mediaByFolder[parentLower] = ArrayList<Medium>()
+                            }
+                            mediaByFolder[parentLower]!!.add(medium)
+                        }
+                    }
+                    context.logPerf("getMediaStoreFolderInfo: query 2 took ${SystemClock.elapsedRealtime() - query2Start} ms, media folders=${mediaByFolder.size}")
+                }
+            } else {
+                // Single query: either no collectMedia, or first launch (knownFolders empty)
+                val projection = if (collectMedia) {
+                    arrayOf(
+                        Images.Media._ID,
+                        Images.Media.DISPLAY_NAME,
+                        Images.Media.DATA,
+                        Images.Media.DATE_MODIFIED,
+                        Images.Media.DATE_TAKEN,
+                        Images.Media.SIZE,
+                        MediaStore.MediaColumns.DURATION
+                    )
+                } else {
+                    arrayOf(Images.Media.DATA)
+                }
+
+                context.logPerf("getMediaStoreFolderInfo: single query, selection length=${baseSelection.length}, args=${baseArgs.size}, collectMedia=$collectMedia")
+                val cursor = context.contentResolver.query(uri, projection, "($baseSelection)", baseArgs.toTypedArray(), null)
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        if (shouldStop) break
+                        val path = it.getStringValue(Images.Media.DATA) ?: continue
+                        val parent = path.getParentPath()
+                        val parentLower = parent.lowercase(Locale.getDefault())
+                        allParentPaths.add(parentLower)
+                        if (parentLower !in knownLower && parent !in newFolders) {
+                            newFolders.add(parent)
+                        }
+
+                        if (collectMedia && parentLower !in knownLower) {
+                            val filename = it.getStringValue(Images.Media.DISPLAY_NAME) ?: continue
+                            if (!showHidden && filename.startsWith('.')) continue
+
+                            val isImage = path.isImageFast()
+                            val isVideo = if (isImage) false else path.isVideoFast()
+                            val isGif = if (isImage || isVideo) false else path.isGif()
+                            val isRaw = if (isImage || isVideo || isGif) false else path.isRawFast()
+                            val isSvg = if (isImage || isVideo || isGif || isRaw) false else path.isSvg()
+
+                            if (!isImage && !isVideo && !isGif && !isRaw && !isSvg) continue
+                            if (isVideo && (isPickImage || filterMedia and TYPE_VIDEOS == 0)) continue
+                            if (isImage && (isPickVideo || filterMedia and TYPE_IMAGES == 0)) continue
+                            if (isGif && filterMedia and TYPE_GIFS == 0) continue
+                            if (isRaw && filterMedia and TYPE_RAWS == 0) continue
+                            if (isSvg && filterMedia and TYPE_SVGS == 0) continue
+
+                            val size = it.getLongValue(Images.Media.SIZE)
+                            if (size <= 0L) continue
+
+                            val type = when {
+                                isVideo -> TYPE_VIDEOS
+                                isGif -> TYPE_GIFS
+                                isRaw -> TYPE_RAWS
+                                isSvg -> TYPE_SVGS
+                                else -> TYPE_IMAGES
+                            }
+
+                            val mediaStoreId = it.getLongValue(Images.Media._ID)
+                            val lastModified = it.getLongValue(Images.Media.DATE_MODIFIED) * 1000
+                            var dateTaken = it.getLongValue(Images.Media.DATE_TAKEN)
+                            if (dateTaken == 0L) dateTaken = lastModified
+                            val videoDuration = Math.round(it.getIntValue(MediaStore.MediaColumns.DURATION) / 1000.toDouble()).toInt()
+                            val isFavorite = favoritePaths.contains(path)
+                            val medium = Medium(null, filename, path, parent, lastModified, dateTaken, size, type, videoDuration, isFavorite, 0L, mediaStoreId)
+
+                            val existing = mediaByFolder!![parentLower]
+                            if (existing == null) {
+                                mediaByFolder[parentLower] = ArrayList<Medium>()
+                            }
+                            mediaByFolder[parentLower]!!.add(medium)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            context.logPerf("getMediaStoreFolderInfo: EXCEPTION ${e.message}")
+        }
+        context.logPerf("getMediaStoreFolderInfo: took ${SystemClock.elapsedRealtime() - start} ms, found ${allParentPaths.size} total, ${newFolders.size} new, ${mediaByFolder?.size ?: 0} media folders")
+        if (newFolders.isNotEmpty()) {
+            context.logPerf("getMediaStoreFolderInfo: new folders: ${newFolders.joinToString(", ")}")
+        }
+        return MediaStoreFolderInfo(allParentPaths, newFolders, mediaByFolder)
+    }
+
+    fun getLatestFileFolders(): LinkedHashSet<String> {
         val uri = Files.getContentUri("external")
         val projection = arrayOf(Images.ImageColumns.DATA)
         val parents = LinkedHashSet<String>()

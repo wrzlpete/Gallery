@@ -106,6 +106,7 @@ const val SEARCH_ALL_FILES_BY_DEFAULT = "search_all_files_by_default"
 const val LAST_EXPORTED_FAVORITES_FOLDER = "last_exported_favorites_folder"
 const val SHOW_PERMISSION_RATIONALE = "show_permission_rationale"
 const val LAST_FOLDER_SCAN_TS = "last_folder_scan_ts"
+const val MEDIA_STORE_VERSION = "media_store_version"
 
 // slideshow
 const val SLIDESHOW_INTERVAL = "slideshow_interval"
