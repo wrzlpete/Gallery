@@ -86,6 +86,7 @@ import org.fossify.gallery.extensions.mediaDB
 import org.fossify.gallery.extensions.removeNoMedia
 import org.fossify.gallery.extensions.showRecycleBinEmptyingDialog
 import org.fossify.gallery.extensions.tryCopyMoveFilesTo
+import org.fossify.gallery.extensions.updateDBDirectory
 import org.fossify.gallery.helpers.DIRECTORY
 import org.fossify.gallery.helpers.FOLDER_MEDIA_CNT_BRACKETS
 import org.fossify.gallery.helpers.FOLDER_MEDIA_CNT_LINE
@@ -439,7 +440,12 @@ class DirectoryAdapter(
         val includedFolders = config.includedFolders
         val hidden = activity.getString(R.string.hidden)
         dirs.forEach {
-            it.name = activity.checkAppendingHidden(it.path, hidden, includedFolders, ArrayList())
+            val (name, hasNoMedia) = activity.checkAppendingHidden(it.path, hidden, includedFolders, ArrayList())
+            it.name = name
+            if (it.hasNoMedia != hasNoMedia) {
+                it.hasNoMedia = hasNoMedia
+                activity.updateDBDirectory(it)
+            }
         }
         listener?.updateDirectories(dirs.toMutableList() as ArrayList)
         activity.runOnUiThread {

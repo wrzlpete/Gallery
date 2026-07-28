@@ -601,21 +601,17 @@ fun Context.checkAppendingHidden(
     hidden: String,
     includedFolders: MutableSet<String>,
     noMediaFolders: ArrayList<String>
-): String {
+): Pair<String, Boolean> {
     val dirName = getFolderNameFromPath(path)
     val folderNoMediaStatuses = HashMap<String, Boolean>()
     noMediaFolders.forEach { folder ->
         folderNoMediaStatuses["$folder/$NOMEDIA"] = true
     }
 
-    return if (
-        path.doesThisOrParentHaveNoMedia(folderNoMediaStatuses, null)
+    val hasNoMedia = path.doesThisOrParentHaveNoMedia(folderNoMediaStatuses, null)
         && !path.isThisOrParentIncluded(includedFolders)
-    ) {
-        "$dirName $hidden"
-    } else {
-        dirName
-    }
+    val name = if (hasNoMedia) "$dirName $hidden" else dirName
+    return Pair(name, hasNoMedia)
 }
 
 fun Context.getFolderNameFromPath(path: String): String {
@@ -901,6 +897,36 @@ fun Context.getCachedDirectories(
         }
         logPerf("getCachedDirectories: getNoMediaFoldersSync() took ${SystemClock.elapsedRealtime() - stepStart2} ms, folders=${noMediaFolders.size}")
 
+        // Populate cache from DB: each directory's hasNoMedia field was computed by
+        // checkAppendingHidden during creation (via doesThisOrParentHaveNoMedia) and persisted.
+        // This gives shouldFolderBeVisible the data it needs without any File.exists() calls.
+        if (!shouldShowHidden) {
+            // One-time migration: existing DB entries got has_nomedia=false (column default).
+            // Use doesThisOrParentHaveNoMedia to match checkAppendingHidden's logic exactly,
+            // so parent .nomedia is detected too. One-time cost, then never again.
+            if (!config.nomediaMigrationDone) {
+                stepStart2 = SystemClock.elapsedRealtime()
+                var migrated = 0
+                directories.forEach { dir ->
+                    val hasNoMedia = dir.path.doesThisOrParentHaveNoMedia(folderNoMediaStatuses, null)
+                    if (dir.hasNoMedia != hasNoMedia) {
+                        dir.hasNoMedia = hasNoMedia
+                        updateDBDirectory(dir)
+                        migrated++
+                    }
+                }
+                config.nomediaMigrationDone = true
+                logPerf("getCachedDirectories: noMedia migration took ${SystemClock.elapsedRealtime() - stepStart2} ms, updated $migrated dirs")
+            } else {
+                directories.forEach { dir ->
+                    val noMediaPath = "${dir.path}/$NOMEDIA"
+                    if (!folderNoMediaStatuses.containsKey(noMediaPath)) {
+                        folderNoMediaStatuses[noMediaPath] = dir.hasNoMedia
+                    }
+                }
+            }
+        }
+
         stepStart2 = SystemClock.elapsedRealtime()
         var filteredDirectories = directories.filter {
             it.path.shouldFolderBeVisible(
@@ -934,21 +960,17 @@ fun Context.getCachedDirectories(
         if (shouldShowHidden) {
             val hiddenString = resources.getString(R.string.hidden)
             filteredDirectories.forEach {
-                val noMediaPath = "${it.path}/$NOMEDIA"
-                val hasNoMedia = if (folderNoMediaStatuses.keys.contains(noMediaPath)) {
-                    folderNoMediaStatuses[noMediaPath]!!
-                } else {
-                    it.path.doesThisOrParentHaveNoMedia(folderNoMediaStatuses) { path, hasNoMedia ->
-                        val newPath = "$path/$NOMEDIA"
-                        folderNoMediaStatuses[newPath] = hasNoMedia
-                    }
-                }
-
-                it.name = if (hasNoMedia && !it.path.isThisOrParentIncluded(includedPaths)) {
+                it.name = if (it.hasNoMedia && !it.path.isThisOrParentIncluded(includedPaths)) {
                     "${it.name.removeSuffix(hiddenString).trim()} $hiddenString"
                 } else {
                     it.name.removeSuffix(hiddenString).trim()
                 }
+            }
+        } else {
+            // Strip any stale hidden suffix from DB names when hidden is off
+            val hiddenString = resources.getString(R.string.hidden)
+            filteredDirectories.forEach {
+                it.name = it.name.removeSuffix(hiddenString).trim()
             }
         }
         logPerf("getCachedDirectories: hidden string renaming took ${SystemClock.elapsedRealtime() - stepStart2} ms")
@@ -1122,7 +1144,8 @@ fun Context.updateDBDirectory(directory: Directory) {
             dateTaken = directory.taken,
             size = directory.size,
             mediaTypes = directory.types,
-            sortValue = directory.sortValue
+            sortValue = directory.sortValue,
+            hasNoMedia = directory.hasNoMedia
         )
     } catch (ignored: Exception) {
     }
@@ -1335,7 +1358,7 @@ fun Context.createDirectoryFromMedia(
     val defaultMedium = Medium(0, "", "", "", 0L, 0L, 0L, 0, 0, false, 0L, 0L)
     val firstItem = curMedia.firstOrNull() ?: defaultMedium
     val lastItem = curMedia.lastOrNull() ?: defaultMedium
-    val dirName = checkAppendingHidden(path, hiddenString, includedFolders, noMediaFolders)
+    val (dirName, hasNoMedia) = checkAppendingHidden(path, hiddenString, includedFolders, noMediaFolders)
     val lastModified = if (isSortingAscending) {
         min(firstItem.modified, lastItem.modified)
     } else {
@@ -1363,7 +1386,8 @@ fun Context.createDirectoryFromMedia(
         size = size,
         location = getPathLocation(path),
         types = mediaTypes,
-        sortValue = sortValue
+        sortValue = sortValue,
+        hasNoMedia = hasNoMedia
     )
 }
 

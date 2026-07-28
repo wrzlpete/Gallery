@@ -106,6 +106,7 @@ import org.fossify.gallery.extensions.shouldFolderBeVisible
 import org.fossify.gallery.extensions.handleExcludedFolderPasswordProtection
 import org.fossify.gallery.extensions.handleMediaManagementPrompt
 import org.fossify.gallery.extensions.isDownloadsFolder
+import org.fossify.gallery.extensions.isThisOrParentIncluded
 import org.fossify.gallery.extensions.launchAbout
 import org.fossify.gallery.extensions.launchCamera
 import org.fossify.gallery.extensions.launchSettings
@@ -1174,6 +1175,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val tempFolderPath = config.tempFolderPath
             val getProperFileSize = config.directorySorting and SORT_BY_SIZE != 0
             val dirPathsToRemove = ArrayList<String>()
+            val hiddenDirPaths = ArrayList<String>()
 
             // Check for recent media changes first - this determines whether we need a full scan
             var stepStart = SystemClock.elapsedRealtime()
@@ -1284,6 +1286,18 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     val folderPath = directory.path
                     if (folderPath != FAVORITES && folderPath != RECYCLE_BIN && folderPath != tempFolderPath) {
                         if (folderPath !in foldersWithRecentMedia) {
+                            if (forceFullScan) {
+                                val folderHasNoMedia = File(folderPath, NOMEDIA).exists()
+                                if (folderHasNoMedia != directory.hasNoMedia) {
+                                    directory.hasNoMedia = folderHasNoMedia
+                                    updateDBDirectory(directory)
+                                    cachedDirectoriesChanged = true
+                                    if (folderHasNoMedia && !config.shouldShowHidden
+                                        && !folderPath.isThisOrParentIncluded(includedFolders)) {
+                                        hiddenDirPaths.add(folderPath)
+                                    }
+                                }
+                            }
                             cachedDirsSkipped++
                             continue
                         }
@@ -1348,6 +1362,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                         this@apply.size = newDir.size
                         types = newDir.types
                         sortValue = getDirectorySortingValue(curMedia, path, name, size, mediaCnt)
+                        hasNoMedia = newDir.hasNoMedia
                     }
 
                     cachedDirectoriesChanged = true
@@ -1391,6 +1406,12 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                         directoryDB.deleteDirPath(it.path)
                     }
                     dirs.removeAll(dirsToRemove)
+                    cachedDirectoriesChanged = true
+                }
+
+                if (hiddenDirPaths.isNotEmpty()) {
+                    val hiddenDirs = dirs.filter { hiddenDirPaths.contains(it.path) }
+                    dirs.removeAll(hiddenDirs)
                     cachedDirectoriesChanged = true
                 }
 
@@ -1561,6 +1582,14 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     getProperFileSize = getProperFileSize,
                     noMediaFolders = noMediaFolders
                 )
+
+                // When hidden is off, skip folders that checkAppendingHidden detected as having .nomedia
+                if (!config.shouldShowHidden && newDir.hasNoMedia
+                    && !folder.isThisOrParentIncluded(includedFolders)) {
+                    logPerf("gotDirectories: skipping hidden folder '$folder' (hasNoMedia from DB)")
+                    continue
+                }
+
                 dirs.add(newDir)
                 newDirectoriesAdded = true
                 newDirsSinceAdapterUpdate++

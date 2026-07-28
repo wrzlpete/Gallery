@@ -607,6 +607,10 @@ class Config(context: Context) : BaseConfig(context) {
         get() = prefs.getLong(LAST_FOLDER_SCAN_TS, 0L)
         set(lastFolderScanTimestamp) = prefs.edit().putLong(LAST_FOLDER_SCAN_TS, lastFolderScanTimestamp).apply()
 
+    var nomediaMigrationDone: Boolean
+        get() = prefs.getBoolean(NOMEDIA_MIGRATION_DONE, false)
+        set(nomediaMigrationDone) = prefs.edit().putBoolean(NOMEDIA_MIGRATION_DONE, nomediaMigrationDone).apply()
+
     var mediaStoreVersion: String
         get() = prefs.getString(MEDIA_STORE_VERSION, "")!!
         set(mediaStoreVersion) = prefs.edit().putString(MEDIA_STORE_VERSION, mediaStoreVersion).apply()

@@ -107,6 +107,7 @@ const val LAST_EXPORTED_FAVORITES_FOLDER = "last_exported_favorites_folder"
 const val SHOW_PERMISSION_RATIONALE = "show_permission_rationale"
 const val LAST_FOLDER_SCAN_TS = "last_folder_scan_ts"
 const val MEDIA_STORE_VERSION = "media_store_version"
+const val NOMEDIA_MIGRATION_DONE = "nomedia_migration_done"
 
 // slideshow
 const val SLIDESHOW_INTERVAL = "slideshow_interval"
