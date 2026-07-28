@@ -57,7 +57,7 @@ fun String.shouldFolderBeVisible(
         false
     } else if (!showHidden) {
         var containsNoMediaOrDot = containsNoMedia || contains("/.")
-        if (!containsNoMediaOrDot && !skipFileCheck) {
+        if (!containsNoMediaOrDot) {
             var curPath = this
             for (i in 0 until count { it == '/' } - 1) {
                 curPath = curPath.substringBeforeLast('/')
@@ -68,7 +68,11 @@ fun String.shouldFolderBeVisible(
                         break
                     }
                 } else {
-                    val noMediaExists = folderNoMediaStatuses.getOrElse(pathToCheck, { false }) || File(pathToCheck).exists()
+                    val noMediaExists = if (skipFileCheck) {
+                        folderNoMediaStatuses.getOrElse(pathToCheck, { false })
+                    } else {
+                        folderNoMediaStatuses.getOrElse(pathToCheck, { false }) || File(pathToCheck).exists()
+                    }
                     callback(pathToCheck, noMediaExists)
                     if (noMediaExists) {
                         containsNoMediaOrDot = true

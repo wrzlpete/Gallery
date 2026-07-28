@@ -349,6 +349,7 @@ class MediaFetcher(val context: Context) {
         val newFolders = ArrayList<String>()
         val mediaByFolder = if (collectMedia) HashMap<String, ArrayList<Medium>>() else null
         val start = SystemClock.elapsedRealtime()
+        val showHidden = context.config.shouldShowHidden
         try {
             val filterMedia = context.config.filterMedia
             if (filterMedia == 0) {
@@ -357,7 +358,6 @@ class MediaFetcher(val context: Context) {
             }
 
             val knownLower = knownFolders.map { it.lowercase(Locale.getDefault()) }.toHashSet()
-            val showHidden = context.config.shouldShowHidden
             val uri = Files.getContentUri("external")
             val baseSelection = getSelectionQuery(filterMedia)
             val baseArgs = getSelectionArgsQuery(filterMedia)
@@ -384,6 +384,10 @@ class MediaFetcher(val context: Context) {
                             newFolders.add(parent)
                         }
                     }
+                }
+                if (shouldStop) {
+                    context.logPerf("getMediaStoreFolderInfo: query 1 interrupted by shouldStop, returning empty to avoid partial results")
+                    return MediaStoreFolderInfo(HashSet(), ArrayList(), mediaByFolder)
                 }
                 context.logPerf("getMediaStoreFolderInfo: query 1 took ${SystemClock.elapsedRealtime() - start} ms, found ${allParentPaths.size} total, ${newFolders.size} new")
 
@@ -536,8 +540,35 @@ class MediaFetcher(val context: Context) {
         } catch (e: Exception) {
             context.logPerf("getMediaStoreFolderInfo: EXCEPTION ${e.message}")
         }
+        if (shouldStop) {
+            context.logPerf("getMediaStoreFolderInfo: interrupted by shouldStop, returning empty to avoid partial results")
+            return MediaStoreFolderInfo(HashSet(), ArrayList(), mediaByFolder)
+        }
         context.logPerf("getMediaStoreFolderInfo: took ${SystemClock.elapsedRealtime() - start} ms, found ${allParentPaths.size} total, ${newFolders.size} new, ${mediaByFolder?.size ?: 0} media folders")
         if (newFolders.isNotEmpty()) {
+            // Filter new folders through shouldFolderBeVisible to exclude hidden folders
+            // (.nomedia, dot folders) when showHidden is false — same as getFoldersToScan does
+            val excludedPaths = if (context.config.temporarilyShowExcluded) HashSet() else context.config.excludedFolders
+            val includedPaths = context.config.includedFolders
+            val folderNoMediaStatuses = HashMap<String, Boolean>()
+            val noMediaFolders = context.getNoMediaFoldersSync()
+            noMediaFolders.forEach { folder ->
+                folderNoMediaStatuses["$folder/$NOMEDIA"] = true
+            }
+            val beforeCount = newFolders.size
+            newFolders.retainAll { folder ->
+                folder.shouldFolderBeVisible(excludedPaths, includedPaths, showHidden, folderNoMediaStatuses, skipFileCheck = true) { path, hasNoMedia ->
+                    folderNoMediaStatuses[path] = hasNoMedia
+                }
+            }
+            if (beforeCount != newFolders.size) {
+                context.logPerf("getMediaStoreFolderInfo: shouldFolderBeVisible filtered $beforeCount -> ${newFolders.size} new folders")
+                // Remove media entries for filtered-out folders
+                if (mediaByFolder != null) {
+                    val newFolderLowers = newFolders.map { it.lowercase(Locale.getDefault()) }.toHashSet()
+                    mediaByFolder.keys.retainAll(newFolderLowers)
+                }
+            }
             context.logPerf("getMediaStoreFolderInfo: new folders: ${newFolders.joinToString(", ")}")
         }
         return MediaStoreFolderInfo(allParentPaths, newFolders, mediaByFolder)

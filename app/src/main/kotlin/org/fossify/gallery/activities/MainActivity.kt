@@ -65,6 +65,7 @@ import org.fossify.commons.extensions.underlineText
 import org.fossify.commons.extensions.viewBinding
 import org.fossify.commons.helpers.DAY_SECONDS
 import org.fossify.commons.helpers.FAVORITES
+import org.fossify.commons.helpers.NOMEDIA
 import org.fossify.commons.helpers.PERMISSION_READ_STORAGE
 import org.fossify.commons.helpers.SORT_BY_DATE_MODIFIED
 import org.fossify.commons.helpers.SORT_BY_DATE_TAKEN
@@ -101,6 +102,7 @@ import org.fossify.gallery.extensions.getFavoritePaths
 import org.fossify.gallery.extensions.getNoMediaFoldersSync
 import org.fossify.gallery.extensions.getOTGFolderChildrenNames
 import org.fossify.gallery.extensions.getSortedDirectories
+import org.fossify.gallery.extensions.shouldFolderBeVisible
 import org.fossify.gallery.extensions.handleExcludedFolderPasswordProtection
 import org.fossify.gallery.extensions.handleMediaManagementPrompt
 import org.fossify.gallery.extensions.isDownloadsFolder
@@ -1463,6 +1465,29 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 foldersToScan.remove(it.path)
             }
 
+            // Final safety filter: remove hidden/excluded folders from foldersToScan
+            // This catches folders from getLatestFileFolders() and foldersWithRecentMedia
+            // that weren't filtered through shouldFolderBeVisible
+            val shouldShowHidden = config.shouldShowHidden
+            if (!shouldShowHidden) {
+                val excludedPaths = if (config.temporarilyShowExcluded) HashSet() else config.excludedFolders
+                val includedPaths = config.includedFolders
+                val folderNoMediaStatuses = HashMap<String, Boolean>()
+                noMediaFolders.forEach { folder ->
+                    folderNoMediaStatuses["$folder/$NOMEDIA"] = true
+                }
+                val beforeFilter = foldersToScan.size
+                foldersToScan.retainAll { folder ->
+                    folder == FAVORITES || folder == RECYCLE_BIN ||
+                    folder.shouldFolderBeVisible(excludedPaths, includedPaths, shouldShowHidden, folderNoMediaStatuses, skipFileCheck = true) { path, hasNoMedia ->
+                        folderNoMediaStatuses[path] = hasNoMedia
+                    }
+                }
+                if (beforeFilter != foldersToScan.size) {
+                    logPerf("gotDirectories: shouldFolderBeVisible filtered foldersToScan $beforeFilter -> ${foldersToScan.size}")
+                }
+            }
+
             // check the remaining folders which were not cached at all yet
             var newDirectoriesAdded = false
             var newDirsSinceAdapterUpdate = 0
@@ -1772,10 +1797,13 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         }
         logPerf("checkInvalidDirectories: mediaStoreFolders has ${mediaStoreFoldersResolved?.size ?: 0} folders (took ${SystemClock.elapsedRealtime() - checkStart} ms)")
 
-        // Safety: if MediaStore query failed/returned empty, skip invalidation on Android 11+
-        val skipMediaStoreCheck = mediaStoreFoldersResolved != null && mediaStoreFoldersResolved.isEmpty()
+        // Safety: if MediaStore query failed/returned empty or returned suspiciously few folders,
+        // skip invalidation to avoid false positives (e.g. partial cursor results from shouldStop)
+        val mediaStoreFolderCount = mediaStoreFoldersResolved?.size ?: 0
+        val skipMediaStoreCheck = mediaStoreFoldersResolved != null &&
+            (mediaStoreFolderCount == 0 || (isRPlus() && dirs.size > 10 && mediaStoreFolderCount < dirs.size / 2))
         if (skipMediaStoreCheck) {
-            logPerf("checkInvalidDirectories: MediaStore query returned empty, skipping invalidation to avoid false positives")
+            logPerf("checkInvalidDirectories: MediaStore query returned $mediaStoreFolderCount folders (dirs=${dirs.size}), skipping invalidation to avoid false positives")
         }
 
         val includedFolders = config.includedFolders
