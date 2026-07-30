@@ -1114,6 +1114,32 @@
                     android:text="@string/import_settings" />
 
             </RelativeLayout>
+
+            <include
+                android:id="@+id/settings_debug_divider"
+                layout="@layout/divider" />
+
+            <TextView
+                android:id="@+id/settings_debug_label"
+                style="@style/SettingsSectionLabelStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/debug" />
+
+            <RelativeLayout
+                android:id="@+id/settings_perf_logging_holder"
+                style="@style/SettingsHolderSwitchStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <org.fossify.commons.views.MyMaterialSwitch
+                    android:id="@+id/settings_perf_logging"
+                    style="@style/SettingsSwitchStyle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/enable_perf_logging" />
+
+            </RelativeLayout>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

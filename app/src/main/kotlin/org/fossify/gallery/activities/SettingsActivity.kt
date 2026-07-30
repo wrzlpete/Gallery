@@ -12,6 +12,7 @@ import org.fossify.commons.dialogs.*
 import org.fossify.commons.extensions.*
 import org.fossify.commons.helpers.*
 import org.fossify.commons.models.RadioItem
+import org.fossify.gallery.BuildConfig
 import org.fossify.gallery.R
 import org.fossify.gallery.databinding.ActivitySettingsBinding
 import org.fossify.gallery.dialogs.*
@@ -111,6 +112,7 @@ class SettingsActivity : SimpleActivity() {
         setupImportFavorites()
         setupExportSettings()
         setupImportSettings()
+        setupPerfLogging()
 
         arrayOf(
             binding.settingsColorCustomizationSectionLabel,
@@ -125,10 +127,14 @@ class SettingsActivity : SimpleActivity() {
             binding.settingsFileOperationsLabel,
             binding.settingsBottomActionsLabel,
             binding.settingsRecycleBinLabel,
-            binding.settingsMigratingLabel
+            binding.settingsMigratingLabel,
+            binding.settingsDebugLabel
         ).forEach {
             it.setTextColor(getProperPrimaryColor())
         }
+
+        binding.settingsDebugLabel.beVisibleIf(BuildConfig.DEBUG)
+        binding.settingsPerfLoggingHolder.beVisibleIf(BuildConfig.DEBUG)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, resultData: Intent?) {
@@ -909,6 +915,14 @@ class SettingsActivity : SimpleActivity() {
         }
     }
 
+    private fun setupPerfLogging() {
+        binding.settingsPerfLogging.isChecked = config.perfLoggingEnabled
+        binding.settingsPerfLoggingHolder.setOnClickListener {
+            binding.settingsPerfLogging.toggle()
+            config.perfLoggingEnabled = binding.settingsPerfLogging.isChecked
+        }
+    }
+
     private fun setupExportSettings() {
         binding.settingsExportHolder.setOnClickListener {
             val configItems = LinkedHashMap<String, Any>().apply {
@@ -999,6 +1013,7 @@ class SettingsActivity : SimpleActivity() {
                 put(THUMBNAIL_SPACING, config.thumbnailSpacing)
                 put(FILE_ROUNDED_CORNERS, config.fileRoundedCorners)
                 put(SEARCH_ALL_FILES_BY_DEFAULT, config.searchAllFilesByDefault)
+                put(PERF_LOGGING_ENABLED, config.perfLoggingEnabled)
             }
 
             exportSettings(configItems)
@@ -1144,6 +1159,7 @@ class SettingsActivity : SimpleActivity() {
                 THUMBNAIL_SPACING -> config.thumbnailSpacing = value.toInt()
                 FILE_ROUNDED_CORNERS -> config.fileRoundedCorners = value.toBoolean()
                 SEARCH_ALL_FILES_BY_DEFAULT -> config.searchAllFilesByDefault = value.toBoolean()
+                PERF_LOGGING_ENABLED -> config.perfLoggingEnabled = value.toBoolean()
                 ALBUM_COVERS -> {
                     val existingCovers = config.parseAlbumCovers()
                     val existingCoverPaths = existingCovers.map { it.path }.toMutableList() as ArrayList<String>

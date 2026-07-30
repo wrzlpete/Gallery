@@ -151,10 +151,8 @@ val Context.dateTakensDB: DateTakensDao
 
 val Context.recycleBin: File get() = filesDir
 
-const val PERF_LOGGING_ENABLED = true
-
 fun Context.logPerf(message: String) {
-    if (!PERF_LOGGING_ENABLED) return
+    if (!config.perfLoggingEnabled) return
     try {
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val logLine = "$timestamp $message\n"
@@ -168,7 +166,7 @@ fun Context.logPerf(message: String) {
 }
 
 fun Context.clearPerfLog() {
-    if (!PERF_LOGGING_ENABLED) return
+    if (!config.perfLoggingEnabled) return
     try {
         val logDir = getExternalFilesDir(null) ?: filesDir
         File(logDir, "perf.log").delete()

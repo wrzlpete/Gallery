@@ -614,4 +614,8 @@ class Config(context: Context) : BaseConfig(context) {
     var mediaStoreVersion: String
         get() = prefs.getString(MEDIA_STORE_VERSION, "")!!
         set(mediaStoreVersion) = prefs.edit().putString(MEDIA_STORE_VERSION, mediaStoreVersion).apply()
+
+    var perfLoggingEnabled: Boolean
+        get() = prefs.getBoolean(PERF_LOGGING_ENABLED, false)
+        set(perfLoggingEnabled) = prefs.edit().putBoolean(PERF_LOGGING_ENABLED, perfLoggingEnabled).apply()
 }
