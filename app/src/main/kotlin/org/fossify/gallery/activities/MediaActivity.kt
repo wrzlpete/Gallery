@@ -85,6 +85,7 @@ import org.fossify.gallery.extensions.restoreRecycleBinPaths
 import org.fossify.gallery.extensions.showRecycleBinEmptyingDialog
 import org.fossify.gallery.extensions.showRestoreConfirmationDialog
 import org.fossify.gallery.extensions.tryDeleteFileDirItem
+import org.fossify.gallery.extensions.updateDirectoryPath
 import org.fossify.gallery.extensions.updateWidgets
 import org.fossify.gallery.helpers.DIRECTORY
 import org.fossify.gallery.helpers.GET_ANY_INTENT
@@ -1031,6 +1032,25 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 } catch (e: Exception) {
                 }
             }.start()
+
+            // Failsafe: sync the parent directory's DB row (tmb / mediaCnt / modified /
+            // sortValue) with the freshly-scanned media. This makes pull-to-refresh
+            // inside a folder a reliable way to pick up deletions, external edits,
+            // and cover-image changes, so the global folder listing stays correct
+            // even when the lightweight global scan would skip the folder. Skipped for
+            // the "All media" view, special folders, and empty folders (the latter are
+            // cleaned up by isDirEmpty() above).
+            if (media.isNotEmpty() && !mShowAll
+                && mPath != FAVORITES && mPath != RECYCLE_BIN
+                && !mPath.startsWith(recycleBinPath)
+            ) {
+                ensureBackgroundThread {
+                    try {
+                        updateDirectoryPath(mPath)
+                    } catch (ignored: Exception) {
+                    }
+                }
+            }
         }
     }
 
@@ -1089,6 +1109,16 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 filtered.forEach {
                     if (it.path.startsWith(recycleBinPath) || !useRecycleBin) {
                         deleteDBPath(it.path)
+                    }
+                }
+
+                // Refresh the parent directory's cover/count/modified in the DB so the
+                // global folder listing reflects the deletion. Only do this when the
+                // folder still has media; empty folders are handled by the block below.
+                if (mMedia.isNotEmpty() && mPath != FAVORITES && mPath != RECYCLE_BIN && !mPath.startsWith(recycleBinPath)) {
+                    try {
+                        updateDirectoryPath(mPath)
+                    } catch (ignored: Exception) {
                     }
                 }
             }
