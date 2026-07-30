@@ -43,5 +43,5 @@ data class Directory(
 
     fun isRecycleBin() = path == RECYCLE_BIN
 
-    fun getKey() = ObjectKey("$path-$modified")
+    fun getKey() = ObjectKey("$path-$tmb-$modified")
 }

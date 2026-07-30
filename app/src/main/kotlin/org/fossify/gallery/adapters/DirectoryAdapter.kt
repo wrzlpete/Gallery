@@ -86,6 +86,8 @@ import org.fossify.gallery.extensions.mediaDB
 import org.fossify.gallery.extensions.removeNoMedia
 import org.fossify.gallery.extensions.showRecycleBinEmptyingDialog
 import org.fossify.gallery.extensions.tryCopyMoveFilesTo
+import org.fossify.gallery.extensions.updateDBDirectory
+import org.fossify.gallery.extensions.updateDirectoryPath
 import org.fossify.gallery.helpers.DIRECTORY
 import org.fossify.gallery.helpers.FOLDER_MEDIA_CNT_BRACKETS
 import org.fossify.gallery.helpers.FOLDER_MEDIA_CNT_LINE
@@ -767,7 +769,7 @@ class DirectoryAdapter(
 
         if (useDefault) {
             val albumCovers = getAlbumCoversWithout(path)
-            storeCovers(albumCovers)
+            storeCovers(albumCovers, path)
         } else {
             pickMediumFrom(path, path)
         }
@@ -778,20 +780,33 @@ class DirectoryAdapter(
             if (File(it).isDirectory) {
                 pickMediumFrom(targetFolder, it)
             } else {
-                val albumCovers = getAlbumCoversWithout(path)
+                // Remove any existing cover entry for the TARGET folder (not the
+                // subdirectory we may have navigated into), then add the new one.
+                val albumCovers = getAlbumCoversWithout(targetFolder)
                 val cover = AlbumCover(targetFolder, it)
                 albumCovers.add(cover)
-                storeCovers(albumCovers)
+                storeCovers(albumCovers, targetFolder)
             }
         }
     }
 
     private fun getAlbumCoversWithout(path: String) = config.parseAlbumCovers().filterNot { it.path == path } as ArrayList
 
-    private fun storeCovers(albumCovers: ArrayList<AlbumCover>) {
+    private fun storeCovers(albumCovers: ArrayList<AlbumCover>, folderPath: String) {
         config.albumCovers = Gson().toJson(albumCovers)
         finishActMode()
-        listener?.refreshItems()
+        // Refresh the directory's tmb in the DB BEFORE triggering the UI refresh,
+        // otherwise getCachedDirectories() will read the stale thumbnail. Done in a
+        // background thread because updateDirectoryPath() does a MediaStore query.
+        ensureBackgroundThread {
+            try {
+                activity.updateDirectoryPath(folderPath)
+            } catch (ignored: Exception) {
+            }
+            activity.runOnUiThread {
+                listener?.refreshItems()
+            }
+        }
     }
 
     private fun getSelectedItems() = selectedKeys.mapNotNull { getItemWithKey(it) } as ArrayList<Directory>
