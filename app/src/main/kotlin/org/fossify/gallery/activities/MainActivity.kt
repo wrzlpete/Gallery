@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.SystemClock
 import android.provider.MediaStore
@@ -182,6 +183,10 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
     private var mScanGeneration = 1L
     private var mDirsLoadStartTime = 0L
     private var mPendingRestart = false
+    private var mPendingFullVolumeScan = false
+    private var mPendingFilesystemScan = true
+    private var mMediaScanInProgress = false
+    @Volatile private var mMediaScanCompleted = false
     private var mWasDefaultFolderChecked = false
     private var mWasMediaManagementPromptShown = false
     private var mLatestMediaId = 0L
@@ -246,7 +251,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             padBottomImeAndSystem = listOf(binding.directoriesGrid)
         )
 
-        binding.directoriesRefreshLayout.setOnRefreshListener { getDirectories(true) }
+        binding.directoriesRefreshLayout.setOnRefreshListener { getDirectories(true, source = "pull-to-refresh") }
         storeStateVariables()
         checkWhatsNewDialog()
         setupLatestMediaId()
@@ -320,7 +325,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         if (mStoredScrollHorizontally != config.scrollHorizontally) {
             mLoadedInitialPhotos = false
             binding.directoriesGrid.adapter = null
-            getDirectories(true)
+            getDirectories(true, source = "scrollHorizontally changed")
         }
 
         if (mStoredTextColor != getProperTextColor()) {
@@ -357,7 +362,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 pendingFullScan = false
                 config.lastFolderScanTimestamp = 0L
                 binding.directoriesGrid.adapter = null
-                getDirectories(true)
+                getDirectories(true, fullVolumeScan = true, source = "pendingFullScan (Level 1 menu)")
             } else {
                 tryLoadGallery()
             }
@@ -642,7 +647,8 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         }
     }
 
-    private fun getDirectories(forceRestart: Boolean = false) {
+    private fun getDirectories(forceRestart: Boolean = false, fullVolumeScan: Boolean = false, filesystemScan: Boolean = true, source: String = "") {
+        logPerf("getDirectories: called forceRestart=$forceRestart fullVolumeScan=$fullVolumeScan filesystemScan=$filesystemScan source='$source'")
         if (mIsGettingDirs) {
             mShouldStopFetching = true
             val elapsed = SystemClock.elapsedRealtime() - mDirsLoadStartTime
@@ -653,6 +659,8 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             } else if (forceRestart) {
                 logPerf("getDirectories: scan already running for ${elapsed} ms, marking pending restart")
                 mPendingRestart = true
+                mPendingFullVolumeScan = fullVolumeScan
+                mPendingFilesystemScan = filesystemScan
                 return
             } else {
                 logPerf("getDirectories: scan already running for ${elapsed} ms, skipping")
@@ -670,7 +678,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         val getVideos = mIsPickVideoIntent || mIsGetVideoContentIntent
 
         getCachedDirectories(getVideos && !getImages, getImages && !getVideos) {
-            gotDirectories(addTempFolderIfNeeded(it), generation, forceRestart)
+            gotDirectories(addTempFolderIfNeeded(it), generation, forceRestart, fullVolumeScan, filesystemScan)
         }
     }
 
@@ -689,7 +697,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         ChangeSortingDialog(this, true, false) {
             binding.directoriesGrid.adapter = null
             if (config.directorySorting and SORT_BY_DATE_MODIFIED != 0 || config.directorySorting and SORT_BY_DATE_TAKEN != 0) {
-                getDirectories(true)
+                getDirectories(true, source = "sorting changed")
             } else {
                 ensureBackgroundThread {
                     gotDirectories(getCurrentlyDisplayedDirs())
@@ -705,7 +713,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             mShouldStopFetching = true
             binding.directoriesRefreshLayout.isRefreshing = true
             binding.directoriesGrid.adapter = null
-            getDirectories(true)
+            getDirectories(true, source = "filterMedia changed")
         }
     }
 
@@ -751,7 +759,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         mLoadedInitialPhotos = false
         config.temporarilyShowHidden = show
         binding.directoriesGrid.adapter = null
-        getDirectories(true)
+        getDirectories(true, source = "temporarilyShowHidden")
         refreshMenuItems()
     }
 
@@ -769,7 +777,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         mLoadedInitialPhotos = false
         config.temporarilyShowExcluded = show
         binding.directoriesGrid.adapter = null
-        getDirectories(true)
+        getDirectories(true, source = "temporarilyShowExcluded")
         refreshMenuItems()
     }
 
@@ -1130,9 +1138,9 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         }
     }
 
-    private fun gotDirectories(newDirs: ArrayList<Directory>, generation: Long = 0, forceFullScan: Boolean = false) {
+    private fun gotDirectories(newDirs: ArrayList<Directory>, generation: Long = 0, forceFullScan: Boolean = false, fullVolumeScan: Boolean = false, filesystemScan: Boolean = true) {
         val gotDirectoriesStart = SystemClock.elapsedRealtime()
-        logPerf("gotDirectories: started with ${newDirs.size} cached dirs (generation=$generation, forceFullScan=$forceFullScan)")
+        logPerf("gotDirectories: started with ${newDirs.size} cached dirs (generation=$generation, forceFullScan=$forceFullScan, fullVolumeScan=$fullVolumeScan, filesystemScan=$filesystemScan)")
         logPerf("gotDirectories: isRPlus=${isRPlus()}, isExternalStorageManager=${isExternalStorageManager()}, SDK=${Build.VERSION.SDK_INT}")
 
         try {
@@ -1163,6 +1171,71 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             // cached folders have been loaded, recheck folders one by one starting with the first displayed
             mLastMediaFetcher?.shouldStop = true
             mLastMediaFetcher = MediaFetcher(applicationContext)
+
+            // MediaProvider scan trigger: uses hidden @SystemApi methods accessible via
+            // ContentResolver.call(). These are implemented as ContentProvider call() methods
+            // with NO permission check, so any app can invoke them directly.
+            //
+            // Two modes:
+            // 1. fullVolumeScan=true (Level 1 menu "Full Media Scan"): calls scanVolume() for each
+            //    mounted storage volume. This scans the ENTIRE volume recursively using
+            //    ModernMediaScanner (FileVisitor-based tree walk in native code). It's thorough but
+            //    slow (minutes for 100k+ files on SD card). Used only for the explicit menu action.
+            //
+            // 2. fullVolumeScan=false (pull-to-refresh): no scanVolume here. Instead, the filesystem
+            //    walk (getNewFoldersViaFilesystem) finds new directories, and targeted scanFile()
+            //    calls index only those specific directories. This is fast (seconds, not minutes).
+            //    See the folder discovery section below.
+            if (forceFullScan && fullVolumeScan && isRPlus() && !mMediaScanInProgress && !mMediaScanCompleted) {
+                mMediaScanInProgress = true
+                ensureBackgroundThread {
+                    val mediaIdBefore = getLatestMediaId()
+                    logPerf("gotDirectories: triggering full volume scan, latestMediaId before=$mediaIdBefore")
+
+                    // Collect all storage volume names from StorageManager — this is the reliable way
+                    // to get the exact volume names MediaProvider expects (lowercase hex UUIDs for
+                    // removable storage, "external_primary" for internal storage).
+                    val storageManager = getSystemService(android.content.Context.STORAGE_SERVICE) as android.os.storage.StorageManager
+                    val volumeNames = ArrayList<String>()
+                    for (sv in storageManager.storageVolumes) {
+                        val volName = sv.mediaStoreVolumeName
+                        val state = sv.state
+                        if (volName != null && (state == android.os.Environment.MEDIA_MOUNTED || state == android.os.Environment.MEDIA_MOUNTED_READ_ONLY)) {
+                            volumeNames.add(volName)
+                        }
+                    }
+
+                    // scanVolume for each mounted volume — scans the entire volume recursively.
+                    // Note: scanVolume blocks MediaProvider's database while scanning, so MediaStore
+                    // queries from other threads will block until the scan completes.
+                    for (volName in volumeNames) {
+                        val volStart = SystemClock.elapsedRealtime()
+                        logPerf("gotDirectories: scanVolume('$volName')")
+                        try {
+                            contentResolver.call(MediaStore.AUTHORITY, "scan_volume", volName, null)
+                            val volTime = SystemClock.elapsedRealtime() - volStart
+                            logPerf("gotDirectories: scanVolume('$volName') returned in ${volTime} ms")
+                        } catch (e: Exception) {
+                            logPerf("gotDirectories: scanVolume('$volName') FAILED: ${e.message}")
+                        }
+                    }
+
+                    val mediaIdAfter = getLatestMediaId()
+                    logPerf("gotDirectories: full volume scan done, latestMediaId after=$mediaIdAfter (changed=${mediaIdAfter != mediaIdBefore})")
+
+                    mMediaScanInProgress = false
+                    // The scan blocked MediaProvider for a long time, causing the current gotDirectories
+                    // flow to be interrupted (mShouldStopFetching was set). Trigger a fresh full scan
+                    // to query MediaStore (which now has the newly indexed files) and discover new folders.
+                    // The mMediaScanCompleted flag prevents the new scan from triggering another scanVolume.
+                    mMediaScanCompleted = true
+                    runOnUiThread {
+                        logPerf("gotDirectories: triggering post-scan refresh")
+                        getDirectories(true, fullVolumeScan = false, source = "post-scan refresh")
+                    }
+                }
+            }
+
             val getImages = mIsPickImageIntent || mIsGetImageContentIntent
             val getVideos = mIsPickVideoIntent || mIsGetVideoContentIntent
             val getImagesOnly = getImages && !getVideos
@@ -1200,10 +1273,16 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     mIsGettingDirs = false
                     mShouldStopFetching = false
                     mDirsLoadStartTime = 0L
+                    if (mMediaScanCompleted) {
+                        mMediaScanCompleted = false
+                    }
                     if (mPendingRestart) {
                         logPerf("gotDirectories: pending restart, starting new scan")
                         mPendingRestart = false
-                        getDirectories()
+                        val pendingVolScan = mPendingFullVolumeScan
+                        val pendingFsScan = mPendingFilesystemScan
+                        mPendingFullVolumeScan = false
+                        getDirectories(true, fullVolumeScan = pendingVolScan, filesystemScan = pendingFsScan, source = "pending restart (early exit)")
                     }
                 }
                 return
@@ -1426,13 +1505,68 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val knownFolderPaths = directoryDB.getAll().map { it.path }.toSet()
             val mediaStoreFolderInfo = if (forceFullScan || foldersWithRecentMedia.isNotEmpty()) {
                 if (isRPlus()) {
-                    mLastMediaFetcher!!.getMediaStoreFolderInfo(
-                        knownFolders = knownFolderPaths,
-                        collectMedia = true,
-                        isPickImage = getImagesOnly,
-                        isPickVideo = getVideosOnly,
-                        favoritePaths = favoritePaths
-                    )
+                    // For pull-to-refresh (filesystemScan=true, !fullVolumeScan): use filesystem walk
+                    // to find new directories, then call scanFile() on each new directory to index
+                    // it in MediaStore. This is fast (seconds) compared to scanVolume (minutes).
+                    // For Level 0 poll (filesystemScan=false): MediaStore already detected the change,
+                    // so skip the filesystem walk and just query MediaStore.
+                    // For Level 2 (fullVolumeScan): scanVolume already indexed everything, so we
+                    // skip the filesystem walk and just query MediaStore.
+                    if (forceFullScan && filesystemScan && !fullVolumeScan && !mMediaScanCompleted && Environment.isExternalStorageManager()) {
+                        // Step 1: Filesystem walk to find new directories (fast - directory listing only)
+                        val fsStart = SystemClock.elapsedRealtime()
+                        val fsNewFolders = mLastMediaFetcher!!.getNewFoldersViaFilesystem(knownFolderPaths)
+                        logPerf("gotDirectories: getNewFoldersViaFilesystem took ${SystemClock.elapsedRealtime() - fsStart} ms, found ${fsNewFolders.size} FS new folders")
+
+                        // Step 2: Call scanFile() on each new directory to index it in MediaStore.
+                        // scanFile with a directory path triggers ModernMediaScanner.Scan which walks
+                        // only that directory subtree. This is fast (seconds for a small folder).
+                        if (fsNewFolders.isNotEmpty()) {
+                            val scanStart = SystemClock.elapsedRealtime()
+                            for (folder in fsNewFolders) {
+                                val fileStart = SystemClock.elapsedRealtime()
+                                try {
+                                    contentResolver.call(MediaStore.AUTHORITY, "scan_file", folder, null)
+                                    val fileTime = SystemClock.elapsedRealtime() - fileStart
+                                    logPerf("gotDirectories: scanFile('$folder') done in ${fileTime} ms")
+                                } catch (e: Exception) {
+                                    logPerf("gotDirectories: scanFile('$folder') FAILED: ${e.message}")
+                                }
+                            }
+                            logPerf("gotDirectories: targeted scanFile on ${fsNewFolders.size} folders took ${SystemClock.elapsedRealtime() - scanStart} ms")
+                        }
+
+                        // Step 3: Query MediaStore (which now has the newly indexed files)
+                        val msInfo = mLastMediaFetcher!!.getMediaStoreFolderInfo(
+                            knownFolders = knownFolderPaths,
+                            collectMedia = true,
+                            isPickImage = getImagesOnly,
+                            isPickVideo = getVideosOnly,
+                            favoritePaths = favoritePaths
+                        )
+                        // Merge filesystem-discovered folders into the MediaStore results
+                        val mergedNewFolders = ArrayList(msInfo.newFolders)
+                        val existingLower = msInfo.newFolders.map { it.lowercase(Locale.getDefault()) }.toHashSet()
+                        fsNewFolders.forEach { folder ->
+                            if (folder.lowercase(Locale.getDefault()) !in existingLower) {
+                                mergedNewFolders.add(folder)
+                                existingLower.add(folder.lowercase(Locale.getDefault()))
+                            }
+                        }
+                        MediaFetcher.MediaStoreFolderInfo(msInfo.allParentPaths, mergedNewFolders, msInfo.mediaByFolder)
+                    } else {
+                        // Level 1 (fullVolumeScan) or post-scan refresh: just query MediaStore.
+                        // For fullVolumeScan, scanVolume already indexed everything in the background.
+                        // For post-scan refresh (mMediaScanCompleted=true), scanVolume already ran.
+                        // The filesystem walk + scanFile is skipped to avoid redundant work.
+                        mLastMediaFetcher!!.getMediaStoreFolderInfo(
+                            knownFolders = knownFolderPaths,
+                            collectMedia = true,
+                            isPickImage = getImagesOnly,
+                            isPickVideo = getVideosOnly,
+                            favoritePaths = favoritePaths
+                        )
+                    }
                 } else {
                     MediaFetcher.MediaStoreFolderInfo(HashSet(), mLastMediaFetcher!!.getNewFoldersViaFilesystem(knownFolderPaths), null)
                 }
@@ -1663,10 +1797,17 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 mIsGettingDirs = false
                 mShouldStopFetching = false
                 mDirsLoadStartTime = 0L
+                // Reset the post-scan flag so future pull-to-refresh can trigger a new scan
+                if (mMediaScanCompleted) {
+                    mMediaScanCompleted = false
+                }
                 if (mPendingRestart) {
                     logPerf("gotDirectories: pending restart, starting new scan")
                     mPendingRestart = false
-                    getDirectories()
+                    val pendingVolScan = mPendingFullVolumeScan
+                    val pendingFsScan = mPendingFilesystemScan
+                    mPendingFullVolumeScan = false
+                    getDirectories(true, fullVolumeScan = pendingVolScan, filesystemScan = pendingFsScan, source = "pending restart (finally)")
                 }
             }
         }
@@ -1926,7 +2067,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     mLatestMediaId = mediaId
                     mLatestMediaDateId = mediaDateId
                     runOnUiThread {
-                        getDirectories(true)
+                        getDirectories(true, filesystemScan = false, source = "checkLastMediaChanged poll")
                     }
                 } else {
                     mLastMediaHandler.removeCallbacksAndMessages(null)
@@ -2005,7 +2146,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
     }
 
     override fun refreshItems() {
-        getDirectories(true)
+        getDirectories(true, source = "refreshItems")
     }
 
     override fun recheckPinnedFolders() {

@@ -237,6 +237,17 @@ class MediaFetcher(val context: Context) {
                         parentParent == context.sdCardPath ||
                         parentParent == context.otgPath
                 }
+                .toMutableSet()
+
+            // Always include storage roots as parent dirs so that new top-level folders (e.g. a
+            // folder copied to the SD card root via USB) are discovered even if no everShownFolder
+            // exists under them yet. listFiles() on a storage root is cheap (few top-level entries).
+            if (context.internalStoragePath.isNotEmpty()) {
+                parentDirs.add(context.internalStoragePath)
+            }
+            if (context.sdCardPath.isNotEmpty()) {
+                parentDirs.add(context.sdCardPath)
+            }
 
             context.logPerf("getNewFoldersViaFilesystem: ${parentDirs.size} parent dirs from ${everShownFolders.size} everShownFolders")
 
