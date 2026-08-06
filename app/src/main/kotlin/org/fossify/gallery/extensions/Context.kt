@@ -251,6 +251,10 @@ fun Context.getSortedDirectories(source: ArrayList<Directory>): ArrayList<Direct
         if (sorting and SORT_DESCENDING != 0) {
             result *= -1
         }
+
+        if (result == 0) {
+            result = o1.location.compareTo(o2.location)
+        }
         result
     }
 
