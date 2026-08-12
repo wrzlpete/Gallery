@@ -2,7 +2,6 @@ package org.fossify.gallery.asynctasks
 
 import android.content.Context
 import android.os.AsyncTask
-import org.fossify.commons.helpers.FAVORITES
 import org.fossify.commons.helpers.SORT_BY_DATE_MODIFIED
 import org.fossify.commons.helpers.SORT_BY_DATE_TAKEN
 import org.fossify.commons.helpers.SORT_BY_SIZE
@@ -38,18 +37,12 @@ class GetMediaAsynctask(
         val dateTakens = if (getProperDateTaken) mediaFetcher.getDateTakens() else HashMap()
 
         val media = if (showAll) {
-            val foldersToScan = mediaFetcher.getFoldersToScan().filter { it != RECYCLE_BIN && it != FAVORITES && !context.config.isFolderProtected(it) }
-            val media = ArrayList<Medium>()
-            foldersToScan.forEach {
-                val newMedia = mediaFetcher.getFilesFrom(
-                    it, isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize,
-                    favoritePaths, getVideoDurations, lastModifieds, dateTakens.clone() as HashMap<String, Long>, null
-                )
-                media.addAll(newMedia)
-            }
-
-            mediaFetcher.sortMedia(media, context.config.getFolderSorting(SHOW_ALL))
-            media
+            val allMedia = mediaFetcher.getAllMediaBatched(
+                isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize,
+                favoritePaths, getVideoDurations, lastModifieds, dateTakens
+            )
+            mediaFetcher.sortMedia(allMedia, context.config.getFolderSorting(SHOW_ALL))
+            allMedia
         } else {
             mediaFetcher.getFilesFrom(
                 mPath, isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize, favoritePaths,

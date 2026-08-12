@@ -81,6 +81,74 @@ class MediaFetcher(val context: Context) {
         return curMedia
     }
 
+    fun getAllMediaBatched(
+        isPickImage: Boolean,
+        isPickVideo: Boolean,
+        getProperDateTaken: Boolean,
+        getProperLastModified: Boolean,
+        getProperFileSize: Boolean,
+        favoritePaths: ArrayList<String>,
+        getVideoDurations: Boolean,
+        lastModifieds: HashMap<String, Long>,
+        dateTakens: HashMap<String, Long>
+    ): ArrayList<Medium> {
+        val filterMedia = context.config.filterMedia
+        if (filterMedia == 0) {
+            return ArrayList()
+        }
+
+        return if (isRPlus() && !isExternalStorageManager()) {
+            val folderMedia = getAndroid11FolderMedia(isPickImage, isPickVideo, favoritePaths, false, getProperDateTaken, dateTakens)
+            filterVisibleMedia(folderMedia)
+        } else {
+            val foldersToScan = getFoldersToScan().filter { it != RECYCLE_BIN && it != FAVORITES && !context.config.isFolderProtected(it) }
+            val media = ArrayList<Medium>()
+            foldersToScan.forEach {
+                if (shouldStop) return@forEach
+                media.addAll(
+                    getFilesFrom(
+                        it, isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize,
+                        favoritePaths, getVideoDurations, lastModifieds, dateTakens.clone() as HashMap<String, Long>, null
+                    )
+                )
+            }
+            media
+        }
+    }
+
+    private fun filterVisibleMedia(folderMedia: HashMap<String, ArrayList<Medium>>): ArrayList<Medium> {
+        val excludedPaths = if (context.config.temporarilyShowExcluded) HashSet() else context.config.excludedFolders
+        val includedPaths = context.config.includedFolders
+        val shouldShowHidden = context.config.shouldShowHidden
+        val folderNoMediaStatuses = HashMap<String, Boolean>()
+        val noMediaFolders = context.getNoMediaFoldersSync()
+        noMediaFolders.forEach { folder ->
+            folderNoMediaStatuses["$folder/$NOMEDIA"] = true
+        }
+
+        val recycleBinLower = RECYCLE_BIN.lowercase(Locale.getDefault())
+        val favoritesLower = FAVORITES.lowercase(Locale.getDefault())
+        val result = ArrayList<Medium>()
+        folderMedia.forEach { (_, items) ->
+            if (items.isEmpty()) return@forEach
+            val folderPath = items.first().parentPath
+            val folderLower = folderPath.lowercase(Locale.getDefault())
+
+            if (folderLower == recycleBinLower || folderLower == favoritesLower ||
+                context.config.isFolderProtected(folderLower)
+            ) {
+                return@forEach
+            }
+
+            if (folderPath.shouldFolderBeVisible(excludedPaths, includedPaths, shouldShowHidden, folderNoMediaStatuses) { path, hasNoMedia ->
+                    folderNoMediaStatuses[path] = hasNoMedia
+                }) {
+                result.addAll(items)
+            }
+        }
+        return result
+    }
+
     fun getFoldersToScan(): ArrayList<String> {
         return try {
             val OTGPath = context.config.OTGPath
