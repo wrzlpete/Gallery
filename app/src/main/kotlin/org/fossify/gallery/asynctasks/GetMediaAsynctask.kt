@@ -7,7 +7,6 @@ import org.fossify.commons.helpers.SORT_BY_DATE_MODIFIED
 import org.fossify.commons.helpers.SORT_BY_DATE_TAKEN
 import org.fossify.commons.helpers.SORT_BY_SIZE
 import org.fossify.commons.helpers.isRPlus
-import org.fossify.commons.extensions.isExternalStorageManager
 import org.fossify.gallery.extensions.config
 import org.fossify.gallery.extensions.getFavoritePaths
 import org.fossify.gallery.helpers.*
@@ -41,10 +40,16 @@ class GetMediaAsynctask(
         val dateTakens = if (getProperDateTaken) mediaFetcher.getDateTakens() else HashMap()
 
         val media = if (showAll) {
-            val allMedia = if (isRPlus() && !isExternalStorageManager()) {
+            val allMedia = if (isRPlus()) {
                 // Single batched MediaStore query — reuses the same getMediaStoreFolderInfo
                 // primitive as the folder view. knownFolders=emptySet forces the single-query
                 // path that collects all media in one cursor scan.
+                //
+                // Used regardless of isExternalStorageManager(): MediaStore is always available
+                // on R+ and reads from the OS's pre-built SQLite index, which is dramatically
+                // faster than a per-folder filesystem walk (File.listFiles + per-file stat()).
+                // The filesystem loop took 40-60s for 100k files across 789 folders on an SD
+                // card with ESM; the single MediaStore query takes seconds.
                 val info = mediaFetcher.getMediaStoreFolderInfo(
                     knownFolders = emptySet(),
                     collectMedia = true,
@@ -64,7 +69,7 @@ class GetMediaAsynctask(
                 }
                 result
             } else {
-                // Pre-Android-11 / ESM: filesystem loop with full folder list
+                // Pre-Android-11: filesystem loop with full folder list
                 val foldersToScan = mediaFetcher.getFoldersToScan().filter { it != RECYCLE_BIN && it != FAVORITES && !context.config.isFolderProtected(it) }
                 val result = ArrayList<Medium>()
                 foldersToScan.forEach {
