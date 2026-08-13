@@ -727,6 +727,15 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             }
         }
 
+        // Mark that a media fetch is in progress so checkLastMediaChanged()'s getMedia() call
+        // is blocked while the async task runs. gotMedia(it, true) from the cache callback sets
+        // mIsGettingMedia = false before startAsyncTask() runs, which would otherwise allow
+        // checkLastMediaChanged to fire after 3s, call getMedia() → startAsyncTask() →
+        // stopFetching() on this task, killing it before it completes. The async task's
+        // callback (gotMedia(newMedia, false)) sets mIsGettingMedia = false when it finishes.
+        // If the task is cancelled (onPause), onPause() resets mIsGettingMedia = false.
+        mIsGettingMedia = true
+
         mCurrAsyncTask!!.execute()
     }
 

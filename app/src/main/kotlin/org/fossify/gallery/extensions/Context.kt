@@ -999,9 +999,17 @@ fun Context.getCachedMedia(
     callback: (ArrayList<ThumbnailItem>) -> Unit
 ) {
     ensureBackgroundThread {
+        val start = SystemClock.elapsedRealtime()
         val mediaFetcher = MediaFetcher(this)
+
+        // For "Show all" (path.isEmpty()), getFoldersToScan() is wasted work: its result is
+        // only used for the TYPE_PORTRAITS subfolder check below, and even that result is
+        // never read because the show-all DB query uses getAllMedia() instead of per-folder
+        // getMediaFromPath(). getFoldersToScan() calls shouldFolderBeVisible per folder,
+        // which with ESM does File(folder, ".nomedia").exists() + parent-tree walking —
+        // thousands of SD-card stat() calls that took ~80s for 789 folders. Skip it entirely.
         val foldersToScan = if (path.isEmpty()) {
-            mediaFetcher.getFoldersToScan()
+            ArrayList()
         } else {
             arrayListOf(path)
         }
@@ -1015,7 +1023,7 @@ fun Context.getCachedMedia(
             media.addAll(getUpdatedDeletedMedia())
         }
 
-        if (config.filterMedia and TYPE_PORTRAITS != 0) {
+        if (config.filterMedia and TYPE_PORTRAITS != 0 && foldersToScan.isNotEmpty()) {
             val foldersToAdd = ArrayList<String>()
             for (folder in foldersToScan) {
                 val allFiles = File(folder).listFiles() ?: continue
@@ -1031,7 +1039,9 @@ fun Context.getCachedMedia(
             // "Show all" cache: single getAllMedia() query instead of N per-folder
             // getMediaFromPath() calls. Filter out protected folders in-memory.
             try {
+                val dbStart = SystemClock.elapsedRealtime()
                 val allMedia = mediaDB.getAllMedia()
+                logPerf("getCachedMedia: getAllMedia() returned ${allMedia.size} rows in ${SystemClock.elapsedRealtime() - dbStart} ms")
                 media.addAll(allMedia.filter { !config.isFolderProtected(it.parentPath) })
             } catch (ignored: Exception) {
             }
@@ -1066,6 +1076,7 @@ fun Context.getCachedMedia(
         val pathToUse = path.ifEmpty { SHOW_ALL }
         mediaFetcher.sortMedia(media, config.getFolderSorting(pathToUse))
         val grouped = mediaFetcher.groupMedia(media, pathToUse)
+        logPerf("getCachedMedia: path='$path' total ${SystemClock.elapsedRealtime() - start} ms, ${grouped.size} items")
         callback(grouped.clone() as ArrayList<ThumbnailItem>)
         val OTGPath = config.OTGPath
 
@@ -1073,6 +1084,7 @@ fun Context.getCachedMedia(
             val mediaToDelete = ArrayList<Medium>()
             // creating a new thread intentionally, do not reuse the common background thread
             Thread {
+                val cleanupStart = SystemClock.elapsedRealtime()
                 media.filter { !getDoesFilePathExist(it.path, OTGPath) }.forEach {
                     if (it.path.startsWith(recycleBinPath)) {
                         deleteDBPath(it.path)
@@ -1091,6 +1103,7 @@ fun Context.getCachedMedia(
                     } catch (ignored: Exception) {
                     }
                 }
+                logPerf("getCachedMedia: cleanup thread checked ${media.size} paths, deleted ${mediaToDelete.size} in ${SystemClock.elapsedRealtime() - cleanupStart} ms")
             }.start()
         } catch (ignored: Exception) {
         }

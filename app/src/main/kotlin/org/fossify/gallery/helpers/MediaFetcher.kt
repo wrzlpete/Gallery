@@ -580,7 +580,7 @@ class MediaFetcher(val context: Context) {
                     mediaByFolder.keys.retainAll(newFolderLowers)
                 }
             }
-            context.logPerf("getMediaStoreFolderInfo: new folders: ${newFolders.joinToString(", ")}")
+            context.logPerf("getMediaStoreFolderInfo: ${newFolders.size} new folders")
         }
         return MediaStoreFolderInfo(allParentPaths, newFolders, mediaByFolder)
     }
