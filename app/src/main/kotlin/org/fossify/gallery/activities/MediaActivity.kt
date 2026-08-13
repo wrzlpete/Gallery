@@ -131,6 +131,12 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private var mShowLoadingIndicator = true
     private var mWasFullscreenViewOpen = false
     private var mLastSearchedText = ""
+    // Monotonic token used to drop stale searchQueryChanged results. ensureBackgroundThread
+    // spawns a raw Thread per call (no executor, no cancellation), so an earlier filter can
+    // finish after a later clear and overwrite the grid with stale filtered results. Both the
+    // increment (in the listener / setupAdapter) and the check (in the posted runnable) run on
+    // the UI thread, so no synchronization is needed.
+    private var mSearchGeneration = 0L
     private var mLatestMediaId = 0L
     private var mLatestMediaDateId = 0L
     private var mLastMediaHandler = Handler()
@@ -434,6 +440,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     }
 
     private fun searchQueryChanged(text: String) {
+        val generation = ++mSearchGeneration
         ensureBackgroundThread {
             try {
                 val filtered = mMedia
@@ -443,6 +450,9 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                     media = filtered as ArrayList<Medium>, path = mPath
                 )
                 runOnUiThread {
+                    // A newer search/clear superseded this one — drop the stale result so it
+                    // cannot overwrite the grid after the user already cleared the field.
+                    if (generation != mSearchGeneration) return@runOnUiThread
                     if (grouped.isEmpty()) {
                         binding.mediaEmptyTextPlaceholder.text =
                             getString(org.fossify.commons.R.string.no_items_found)
@@ -698,10 +708,12 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                     gotMedia(newMedia, false)
 
                     // remove cached files that are no longer valid for whatever reason
-                    val newPaths = newMedia.mapNotNull { it as? Medium }.map { it.path }
+                    // Use a HashSet so contains() is O(1); a List would make this O(N²)
+                    // which is catastrophic for "Show all" with 100k+ cached items.
+                    val newPaths = newMedia.mapNotNull { it as? Medium }.map { it.path }.toHashSet()
                     oldMedia
                         .mapNotNull { it as? Medium }
-                        .filter { !newPaths.contains(it.path) }
+                        .filter { it.path !in newPaths }
                         .forEach {
                             if (mPath == FAVORITES && getDoesFilePathExist(it.path)) {
                                 favoritesDB.deleteFavoritePath(it.path)
@@ -1179,7 +1191,8 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 return@deleteFiles
             }
 
-            mMedia.removeAll { filtered.map { it.path }.contains((it as? Medium)?.path) }
+            val filteredPaths = filtered.map { it.path }.toHashSet()
+            mMedia.removeAll { (it as? Medium)?.path in filteredPaths }
 
             ensureBackgroundThread {
                 val useRecycleBin = config.useRecycleBin

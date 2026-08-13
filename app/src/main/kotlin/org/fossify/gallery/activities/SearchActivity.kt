@@ -283,7 +283,8 @@ class SearchActivity : SimpleActivity(), MediaOperationsListener {
                 return@deleteFiles
             }
 
-            mAllMedia.removeAll { filtered.map { it.path }.contains((it as? Medium)?.path) }
+            val filteredPaths = filtered.map { it.path }.toHashSet()
+            mAllMedia.removeAll { (it as? Medium)?.path in filteredPaths }
 
             ensureBackgroundThread {
                 val useRecycleBin = config.useRecycleBin
