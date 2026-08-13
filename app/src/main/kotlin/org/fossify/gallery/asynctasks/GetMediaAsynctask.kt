@@ -6,11 +6,14 @@ import org.fossify.commons.helpers.FAVORITES
 import org.fossify.commons.helpers.SORT_BY_DATE_MODIFIED
 import org.fossify.commons.helpers.SORT_BY_DATE_TAKEN
 import org.fossify.commons.helpers.SORT_BY_SIZE
+import org.fossify.commons.helpers.isRPlus
+import org.fossify.commons.extensions.isExternalStorageManager
 import org.fossify.gallery.extensions.config
 import org.fossify.gallery.extensions.getFavoritePaths
 import org.fossify.gallery.helpers.*
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.models.ThumbnailItem
+import java.util.Locale
 
 class GetMediaAsynctask(
     val context: Context, val mPath: String, val isPickImage: Boolean = false, val isPickVideo: Boolean = false,
@@ -38,18 +41,45 @@ class GetMediaAsynctask(
         val dateTakens = if (getProperDateTaken) mediaFetcher.getDateTakens() else HashMap()
 
         val media = if (showAll) {
-            val foldersToScan = mediaFetcher.getFoldersToScan().filter { it != RECYCLE_BIN && it != FAVORITES && !context.config.isFolderProtected(it) }
-            val media = ArrayList<Medium>()
-            foldersToScan.forEach {
-                val newMedia = mediaFetcher.getFilesFrom(
-                    it, isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize,
-                    favoritePaths, getVideoDurations, lastModifieds, dateTakens.clone() as HashMap<String, Long>, null
+            val allMedia = if (isRPlus() && !isExternalStorageManager()) {
+                // Single batched MediaStore query — reuses the same getMediaStoreFolderInfo
+                // primitive as the folder view. knownFolders=emptySet forces the single-query
+                // path that collects all media in one cursor scan.
+                val info = mediaFetcher.getMediaStoreFolderInfo(
+                    knownFolders = emptySet(),
+                    collectMedia = true,
+                    isPickImage = isPickImage,
+                    isPickVideo = isPickVideo,
+                    favoritePaths = favoritePaths
                 )
-                media.addAll(newMedia)
+                // mediaByFolder is already visibility-filtered by shouldFolderBeVisible inside
+                // getMediaStoreFolderInfo. Filter out special/protected folders.
+                val recycleBinLower = RECYCLE_BIN.lowercase(Locale.getDefault())
+                val favoritesLower = FAVORITES.lowercase(Locale.getDefault())
+                val result = ArrayList<Medium>()
+                info.mediaByFolder?.forEach { (folderLower, items) ->
+                    if (folderLower == recycleBinLower || folderLower == favoritesLower) return@forEach
+                    if (context.config.isFolderProtected(folderLower)) return@forEach
+                    result.addAll(items)
+                }
+                result
+            } else {
+                // Pre-Android-11 / ESM: filesystem loop with full folder list
+                val foldersToScan = mediaFetcher.getFoldersToScan().filter { it != RECYCLE_BIN && it != FAVORITES && !context.config.isFolderProtected(it) }
+                val result = ArrayList<Medium>()
+                foldersToScan.forEach {
+                    if (mediaFetcher.shouldStop) return@forEach
+                    result.addAll(
+                        mediaFetcher.getFilesFrom(
+                            it, isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize,
+                            favoritePaths, getVideoDurations, lastModifieds, dateTakens.clone() as HashMap<String, Long>, null
+                        )
+                    )
+                }
+                result
             }
-
-            mediaFetcher.sortMedia(media, context.config.getFolderSorting(SHOW_ALL))
-            media
+            mediaFetcher.sortMedia(allMedia, context.config.getFolderSorting(SHOW_ALL))
+            allMedia
         } else {
             mediaFetcher.getFilesFrom(
                 mPath, isPickImage, isPickVideo, getProperDateTaken, getProperLastModified, getProperFileSize, favoritePaths,

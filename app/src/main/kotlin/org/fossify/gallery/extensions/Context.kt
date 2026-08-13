@@ -1027,11 +1027,21 @@ fun Context.getCachedMedia(
         }
 
         val shouldShowHidden = config.shouldShowHidden
-        foldersToScan.filter { path.isNotEmpty() || !config.isFolderProtected(it) }.forEach {
+        if (path.isEmpty()) {
+            // "Show all" cache: single getAllMedia() query instead of N per-folder
+            // getMediaFromPath() calls. Filter out protected folders in-memory.
             try {
-                val currMedia = mediaDB.getMediaFromPath(it)
-                media.addAll(currMedia)
+                val allMedia = mediaDB.getAllMedia()
+                media.addAll(allMedia.filter { !config.isFolderProtected(it.parentPath) })
             } catch (ignored: Exception) {
+            }
+        } else {
+            foldersToScan.filter { !config.isFolderProtected(it) }.forEach {
+                try {
+                    val currMedia = mediaDB.getMediaFromPath(it)
+                    media.addAll(currMedia)
+                } catch (ignored: Exception) {
+                }
             }
         }
 

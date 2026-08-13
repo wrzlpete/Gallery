@@ -3,10 +3,19 @@ package org.fossify.gallery.interfaces
 import androidx.room.*
 import org.fossify.gallery.models.Medium
 
+data class MediumPathInfo(
+    @ColumnInfo(name = "full_path") val fullPath: String,
+    @ColumnInfo(name = "last_modified") val lastModified: Long,
+    @ColumnInfo(name = "size") val size: Long
+)
+
 @Dao
 interface MediumDao {
     @Query("SELECT filename, full_path, parent_path, last_modified, date_taken, size, type, video_duration, is_favorite, deleted_ts, media_store_id FROM media WHERE deleted_ts = 0 AND parent_path = :path COLLATE NOCASE")
     fun getMediaFromPath(path: String): List<Medium>
+
+    @Query("SELECT filename, full_path, parent_path, last_modified, date_taken, size, type, video_duration, is_favorite, deleted_ts, media_store_id FROM media WHERE deleted_ts = 0")
+    fun getAllMedia(): List<Medium>
 
     @Query("SELECT filename, full_path, parent_path, last_modified, date_taken, size, type, video_duration, is_favorite, deleted_ts, media_store_id FROM media WHERE deleted_ts = 0 AND is_favorite = 1")
     fun getFavorites(): List<Medium>
@@ -23,11 +32,20 @@ interface MediumDao {
     @Query("SELECT filename, full_path, parent_path, last_modified, date_taken, size, type, video_duration, is_favorite, deleted_ts, media_store_id FROM media WHERE deleted_ts < :timestmap AND deleted_ts != 0")
     fun getOldRecycleBinItems(timestmap: Long): List<Medium>
 
+    @Query("SELECT full_path, last_modified, size FROM media WHERE deleted_ts = 0")
+    fun getAllMediaPaths(): List<MediumPathInfo>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(medium: Medium)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertAll(media: List<Medium>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    fun insertAllIgnore(media: List<Medium>): LongArray
+
+    @Query("UPDATE media SET filename = :filename, parent_path = :parentPath, last_modified = :lastModified, date_taken = :dateTaken, size = :size, type = :type, video_duration = :videoDuration, media_store_id = :mediaStoreId WHERE full_path = :fullPath COLLATE NOCASE")
+    fun updateMediumFields(fullPath: String, filename: String, parentPath: String, lastModified: Long, dateTaken: Long, size: Long, type: Int, videoDuration: Int, mediaStoreId: Long)
 
     @Delete
     fun deleteMedia(vararg medium: Medium)

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
+import android.provider.MediaStore
 import android.view.ViewGroup
 import android.widget.RelativeLayout
 import androidx.core.net.toUri
@@ -1026,12 +1027,88 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         if (!isFromCache) {
             val mediaToInsert = mMedia
                 .filter { it is Medium && it.deletedTS == 0L }.map { it as Medium }
-            Thread {
-                try {
-                    mediaDB.insertAll(mediaToInsert)
+
+            // Mitigation 1: skip the DB write entirely if MediaStore hasn't changed since
+            // the last write. This eliminates the common-case contention where reopening
+            // "Show all" would rewrite the entire media table for nothing.
+            val mediaStoreChanged = if (mShowAll && isRPlus()) {
+                val currentVersion = try {
+                    MediaStore.getVersion(this, MediaStore.VOLUME_EXTERNAL)
                 } catch (e: Exception) {
+                    null
                 }
-            }.start()
+                val savedVersion = config.mediaStoreVersion
+                if (currentVersion != null && currentVersion != savedVersion) {
+                    config.mediaStoreVersion = currentVersion
+                    true
+                } else if (currentVersion != null) {
+                    false
+                } else {
+                    true // couldn't determine version, be safe and write
+                }
+            } else {
+                true // non-showAll or pre-R: always write (small per-folder writes)
+            }
+
+            if (mediaStoreChanged || !mShowAll) {
+                Thread {
+                    try {
+                        if (mShowAll && mediaToInsert.size > 1000) {
+                            // Mitigation 3: diff-and-update for large showAll loads.
+                            // Instead of REPLACE (which rewrites every row even if unchanged),
+                            // do INSERT OR IGNORE for new rows + targeted UPDATE only for
+                            // rows whose last_modified or size actually changed.
+                            val existing = mediaDB.getAllMediaPaths().associateBy {
+                                it.fullPath.lowercase()
+                            }
+                            val toInsert = ArrayList<Medium>()
+                            val toUpdate = ArrayList<Medium>()
+                            for (medium in mediaToInsert) {
+                                val key = medium.path.lowercase()
+                                val info = existing[key]
+                                if (info == null) {
+                                    toInsert.add(medium)
+                                } else if (info.lastModified != medium.modified || info.size != medium.size) {
+                                    toUpdate.add(medium)
+                                }
+                            }
+
+                            // Mitigation 2: chunk inserts and updates to avoid holding
+                            // the write lock too long. Each batch is its own transaction.
+                            val batchSize = 500
+                            var i = 0
+                            while (i < toInsert.size) {
+                                val end = minOf(i + batchSize, toInsert.size)
+                                mediaDB.insertAllIgnore(toInsert.subList(i, end))
+                                i = end
+                            }
+                            for (medium in toUpdate) {
+                                mediaDB.updateMediumFields(
+                                    fullPath = medium.path,
+                                    filename = medium.name,
+                                    parentPath = medium.parentPath,
+                                    lastModified = medium.modified,
+                                    dateTaken = medium.taken,
+                                    size = medium.size,
+                                    type = medium.type,
+                                    videoDuration = medium.videoDuration,
+                                    mediaStoreId = medium.mediaStoreId
+                                )
+                            }
+                        } else {
+                            // Small loads or per-folder: chunked REPLACE is fine
+                            val batchSize = 500
+                            var i = 0
+                            while (i < mediaToInsert.size) {
+                                val end = minOf(i + batchSize, mediaToInsert.size)
+                                mediaDB.insertAll(mediaToInsert.subList(i, end))
+                                i = end
+                            }
+                        }
+                    } catch (e: Exception) {
+                    }
+                }.start()
+            }
 
             // Failsafe: sync the parent directory's DB row (tmb / mediaCnt / modified /
             // sortValue) with the freshly-scanned media. This makes pull-to-refresh
