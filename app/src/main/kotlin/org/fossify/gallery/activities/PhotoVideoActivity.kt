@@ -308,7 +308,7 @@ open class PhotoVideoActivity : BaseViewerActivity(), ViewPagerFragment.Fragment
 
     private fun openViewPager(path: String) {
         if (!intent.getBooleanExtra(IS_FROM_GALLERY, false)) {
-            MediaActivity.mMedia.clear()
+            MediaActivity.mMediaForViewPager.clear()
         }
         runOnUiThread {
             hideKeyboard()

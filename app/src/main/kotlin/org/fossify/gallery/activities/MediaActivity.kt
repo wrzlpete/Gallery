@@ -75,6 +75,7 @@ import org.fossify.gallery.extensions.getCachedMedia
 import org.fossify.gallery.extensions.getHumanizedFilename
 import org.fossify.gallery.extensions.isDownloadsFolder
 import org.fossify.gallery.extensions.launchAbout
+import org.fossify.gallery.extensions.logMediaDebug
 import org.fossify.gallery.extensions.launchCamera
 import org.fossify.gallery.extensions.launchSettings
 import org.fossify.gallery.extensions.launchGesturePlayer
@@ -130,6 +131,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private var mLoadedInitialPhotos = false
     private var mShowLoadingIndicator = true
     private var mWasFullscreenViewOpen = false
+    @Volatile private var mIsResumed = false
     private var mLastSearchedText = ""
     // Monotonic token used to drop stale searchQueryChanged results. ensureBackgroundThread
     // spawns a raw Thread per call (no executor, no cancellation), so an earlier filter can
@@ -156,8 +158,18 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     private val binding by viewBinding(ActivityMediaBinding::inflate)
 
+    // This activity's own media list. Previously this was a companion-object (static) field,
+    // which was shared across all MediaActivity instances. When the user navigated from
+    // "Show all" to a folder, both activities' gotMedia() calls raced to write the same
+    // field, causing the folder view to briefly show 140k items and the showAll view to
+    // briefly show 2 items. Each instance now keeps its own list.
+    private var mMedia = ArrayList<ThumbnailItem>()
+
     companion object {
-        var mMedia = ArrayList<ThumbnailItem>()
+        // Handoff point: set by openInViewPager() right before launching ViewPagerActivity,
+        // which reads it in its onCreate to populate the swipe list. This is the ONLY code
+        // that should write to this field (besides PhotoVideoActivity.clear()).
+        var mMediaForViewPager = ArrayList<ThumbnailItem>()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -180,6 +192,13 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             return
         }
 
+        // Set mShowAll once from the current config. Do NOT re-read it in
+        // storeStateVariables/onPause — another MediaActivity instance (e.g. a folder view
+        // opened from "Show all") may have set config.showAll = false by the time our
+        // onPause runs, which would corrupt our mShowAll and cause subsequent async tasks
+        // to query with showAll=false + empty path, returning 0 items.
+        mShowAll = config.showAll && mPath != RECYCLE_BIN
+
         setupOptionsMenu()
         refreshMenuItems()
         storeStateVariables()
@@ -187,6 +206,22 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             padTopSystem = listOf(binding.mediaMenu),
             padBottomImeAndSystem = listOf(binding.mediaGrid)
         )
+
+        // If the activity was killed in the background (common with the large "Show all"
+        // list holding memory while a fullscreen image is open) and is being recreated,
+        // the search EditText restores its text via Android View state restoration, but
+        // our mLastSearchedText instance field resets to "" and the onSearchTextChangedListener
+        // is NOT fired for restored text. Without this sync, setupAdapter() would take the
+        // mLastSearchedText.isEmpty() branch and show the full list, even though the search
+        // field still displays the filter term. Re-sync from the actual field contents so the
+        // filter is re-applied once media finishes loading, and mark the search as open so the
+        // back button clears it instead of exiting the activity.
+        val restoredQuery = binding.mediaMenu.getCurrentQuery()
+        if (restoredQuery.isNotEmpty()) {
+            mLastSearchedText = restoredQuery
+            binding.mediaMenu.isSearchOpen = true
+            logMediaDebug("onCreate: restored search query '$restoredQuery' from EditText state")
+        }
 
         if (mShowAll) {
             registerFileUpdateListener()
@@ -206,6 +241,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun onResume() {
         super.onResume()
+        mIsResumed = true
         updateMenuColors()
         if (mStoredAnimateGifs != config.animateGifs) {
             getMediaAdapter()?.updateAnimateGifs(config.animateGifs)
@@ -259,6 +295,11 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
         // do not refresh Random sorted files after opening a fullscreen image and going Back
         val isRandomSorting = config.getFolderSorting(mPath) and SORT_BY_RANDOM != 0
+        logMediaDebug(
+            "onResume: showAll=$mShowAll path='$mPath' mediaSize=${mMedia.size} " +
+                "lastSearch='$mLastSearchedText' wasFullscreen=$mWasFullscreenViewOpen " +
+                "isRandom=$isRandomSorting loadedInitial=$mLoadedInitialPhotos isGettingMedia=$mIsGettingMedia"
+        )
         if (mMedia.isEmpty() || !isRandomSorting || (isRandomSorting && !mWasFullscreenViewOpen)) {
             if (shouldSkipAuthentication()) {
                 tryLoadGallery()
@@ -272,10 +313,13 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 }
             }
         }
+        mWasFullscreenViewOpen = false
     }
 
     override fun onPause() {
         super.onPause()
+        mIsResumed = false
+        logMediaDebug("onPause: showAll=$mShowAll mediaSize=${mMedia.size} lastSearch='$mLastSearchedText'")
         mIsGettingMedia = false
         binding.mediaRefreshLayout.isRefreshing = false
         storeStateVariables()
@@ -302,7 +346,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (config.showAll && !isChangingConfigurations) {
+        // Use mShowAll (the instance field) rather than config.showAll (the global setting),
+        // because another MediaActivity instance may have changed config.showAll by the time
+        // this onDestroy runs. This activity knows whether IT is the showAll activity.
+        if (mShowAll && !isChangingConfigurations) {
             config.temporarilyShowHidden = false
             config.tempSkipDeleteConfirmation = false
             config.tempSkipRecycleBin = false
@@ -318,7 +365,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             binding.mediaMenu.closeSearch()
             true
         } else {
-            if (config.showAll) {
+            if (mShowAll) {
                 appLockManager.lock()
             }
 
@@ -409,6 +456,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private fun startSlideshow() {
         if (mMedia.isNotEmpty()) {
             hideKeyboard()
+            mMediaForViewPager = mMedia.clone() as ArrayList<ThumbnailItem>
             Intent(this, ViewPagerActivity::class.java).apply {
                 val item = mMedia.firstOrNull { it is Medium } as? Medium ?: return
                 putExtra(SKIP_AUTHENTICATION, shouldSkipAuthentication())
@@ -435,15 +483,23 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             mStoredMarkFavoriteItems = markFavoriteItems
             mStoredThumbnailSpacing = thumbnailSpacing
             mStoredRoundedCorners = fileRoundedCorners
-            mShowAll = showAll && mPath != RECYCLE_BIN
         }
     }
 
     private fun searchQueryChanged(text: String) {
         val generation = ++mSearchGeneration
+        logMediaDebug("searchQueryChanged: text='$text' gen=$generation mediaSize=${mMedia.size}")
         ensureBackgroundThread {
             try {
-                val filtered = mMedia
+                // Snapshot the reference then iterate the snapshot. mMedia is reassigned by
+                // gotMedia() (on a different background thread) and cleared by onActivityResult;
+                // a concurrent reassignment or clear() during the filter below would otherwise
+                // throw ConcurrentModificationException, which is the most plausible cause of
+                // the intermittent crash when returning from a fullscreen image to a large
+                // filtered "Show all" list. Cloning is O(n) but only runs on each keystroke,
+                // and the snapshot is local to this thread.
+                val snapshot = mMedia.clone() as ArrayList<ThumbnailItem>
+                val filtered = snapshot
                     .filter { it is Medium && it.name.contains(text, true) } as ArrayList
                 filtered.sortBy { it is Medium && !it.name.startsWith(text, true) }
                 val grouped = MediaFetcher(applicationContext).groupMedia(
@@ -452,21 +508,38 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 runOnUiThread {
                     // A newer search/clear superseded this one — drop the stale result so it
                     // cannot overwrite the grid after the user already cleared the field.
-                    if (generation != mSearchGeneration) return@runOnUiThread
-                    if (grouped.isEmpty()) {
-                        binding.mediaEmptyTextPlaceholder.text =
-                            getString(org.fossify.commons.R.string.no_items_found)
-                        binding.mediaEmptyTextPlaceholder.beVisible()
-                        binding.mediaFastscroller.beGone()
-                    } else {
-                        binding.mediaEmptyTextPlaceholder.beGone()
-                        binding.mediaFastscroller.beVisible()
+                    if (generation != mSearchGeneration) {
+                        logMediaDebug("searchQueryChanged: dropping stale gen=$generation (current=$mSearchGeneration)")
+                        return@runOnUiThread
                     }
+                    try {
+                        if (grouped.isEmpty()) {
+                            binding.mediaEmptyTextPlaceholder.text =
+                                getString(org.fossify.commons.R.string.no_items_found)
+                            binding.mediaEmptyTextPlaceholder.beVisible()
+                            binding.mediaFastscroller.beGone()
+                        } else {
+                            binding.mediaEmptyTextPlaceholder.beGone()
+                            binding.mediaFastscroller.beVisible()
+                        }
 
-                    handleGridSpacing(grouped)
-                    getMediaAdapter()?.updateMedia(grouped)
+                        handleGridSpacing(grouped)
+                        getMediaAdapter()?.updateMedia(grouped)
+                        logMediaDebug("searchQueryChanged: applied gen=$generation groupedSize=${grouped.size}")
+                    } catch (e: Exception) {
+                        // The activity may be finishing/destroyed between the background
+                        // completion and this UI update; surface it for diagnosis instead of
+                        // swallowing silently, then rethrow only if we are still alive.
+                        logMediaDebug("searchQueryChanged UI block threw: ${e.javaClass.simpleName}: ${e.message}")
+                        if (!isFinishing && !isDestroyed) {
+                            showErrorToast(e)
+                        }
+                    }
                 }
-            } catch (ignored: Exception) {
+            } catch (e: Exception) {
+                // Previously swallowed silently. Log it so the intermittent crash, if it
+                // originates here, shows up in media_debug.log instead of vanishing.
+                logMediaDebug("searchQueryChanged BG block threw: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }
@@ -512,6 +585,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         }
 
         val currAdapter = binding.mediaGrid.adapter
+        logMediaDebug(
+            "setupAdapter: currAdapter=${if (currAdapter == null) "null" else "exists"} " +
+                "lastSearch='$mLastSearchedText' mediaSize=${mMedia.size}"
+        )
         if (currAdapter == null) {
             initZoomListener()
             MediaAdapter(
@@ -538,6 +615,13 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
             setupLayoutManager()
             handleGridSpacing()
+            // A new adapter was just created with the full mMedia list. If a search query is
+            // active (e.g. activity recreated with restored EditText text, or the adapter was
+            // nulled by a settings change while a filter was active), re-apply the filter so
+            // we don't briefly show the full unfiltered list.
+            if (mLastSearchedText.isNotEmpty()) {
+                searchQueryChanged(mLastSearchedText)
+            }
         } else if (mLastSearchedText.isEmpty()) {
             (currAdapter as MediaAdapter).updateMedia(mMedia)
             handleGridSpacing()
@@ -555,7 +639,9 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     }
 
     private fun checkLastMediaChanged() {
-        if (isDestroyed || config.getFolderSorting(mPath) and SORT_BY_RANDOM != 0) {
+        if (!mIsResumed || isFinishing || isDestroyed ||
+            config.getFolderSorting(mPath) and SORT_BY_RANDOM != 0
+        ) {
             return
         }
 
@@ -568,7 +654,9 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                     mLatestMediaId = mediaId
                     mLatestMediaDateId = mediaDateId
                     runOnUiThread {
-                        getMedia()
+                        if (mIsResumed && !isFinishing && !isDestroyed) {
+                            getMedia()
+                        }
                     }
                 } else {
                     checkLastMediaChanged()
@@ -666,6 +754,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     private fun getMedia() {
         if (mIsGettingMedia) {
+            return
+        }
+
+        if (isFinishing || isDestroyed) {
             return
         }
 
@@ -989,6 +1081,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             finish()
         } else {
             mWasFullscreenViewOpen = true
+            logMediaDebug("itemClicked: opening fullscreen path='$path' lastSearch='$mLastSearchedText' mediaSize=${mMedia.size}")
             if (!path.isVideoFast()) {
                 openInViewPager(path)
                 return
@@ -1003,6 +1096,11 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     }
 
     private fun openInViewPager(path: String) {
+        // Sync this instance's media list to the static handoff field right before launching
+        // ViewPagerActivity, which reads it in its onCreate. This is the only place that
+        // writes to the companion-object field, so concurrent MediaActivity instances can no
+        // longer overwrite each other's media.
+        mMediaForViewPager = mMedia.clone() as ArrayList<ThumbnailItem>
         Intent(this, ViewPagerActivity::class.java).apply {
             putExtra(SKIP_AUTHENTICATION, shouldSkipAuthentication())
             putExtra(PATH, path)
@@ -1027,8 +1125,19 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     private fun gotMedia(media: ArrayList<ThumbnailItem>, isFromCache: Boolean) {
         mIsGettingMedia = false
+        // Don't schedule periodic media-change checks or update the UI if the activity is
+        // no longer in the foreground. Without this guard, a background-thread gotMedia
+        // callback that fires after onPause() re-schedules checkLastMediaChanged via
+        // mLastMediaHandler, creating a 3-second loop that keeps starting async tasks
+        // (which return 0 items because mShowAll was corrupted) and burning CPU/battery
+        // while the user is in a different activity.
+        if (!mIsResumed || isFinishing || isDestroyed) {
+            logMediaDebug("gotMedia: dropping (not resumed) size=${media.size} isFromCache=$isFromCache")
+            return
+        }
         checkLastMediaChanged()
         mMedia = media
+        logMediaDebug("gotMedia: size=${media.size} isFromCache=$isFromCache lastSearch='$mLastSearchedText'")
 
         runOnUiThread {
             binding.loadingIndicator.hide()
@@ -1052,17 +1161,35 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             // Mitigation 1: skip the DB write entirely if MediaStore hasn't changed since
             // the last write. This eliminates the common-case contention where reopening
             // "Show all" would rewrite the entire media table for nothing.
-            val mediaStoreChanged = if (mShowAll && isRPlus()) {
-                val currentVersion = try {
+            //
+            // IMPORTANT: the version is only saved AFTER the write completes successfully
+            // (inside the write thread below). Previously it was saved before the thread
+            // started, which meant that if the activity was destroyed (calling
+            // GalleryDatabase.destroyInstance()) before the write finished, the version
+            // was already marked as "current" but the data was never persisted. Every
+            // subsequent load would then skip the write (version matches) and the cache
+            // would be permanently stale — showing old data first, then refreshing from
+            // MediaStore every single time.
+            //
+            // FALLBACK: the version check alone is not sufficient because the old code may
+            // have already poisoned config.mediaStoreVersion (saved it before a write that
+            // never completed). As a safety net, we also compare the fresh scan count with
+            // the DB row count. If they differ, the cache is stale and we force a write
+            // regardless of what the version check says. This self-heals the poisoned state.
+            val currentMediaStoreVersion = if (mShowAll && isRPlus()) {
+                try {
                     MediaStore.getVersion(this, MediaStore.VOLUME_EXTERNAL)
                 } catch (e: Exception) {
                     null
                 }
-                val savedVersion = config.mediaStoreVersion
-                if (currentVersion != null && currentVersion != savedVersion) {
-                    config.mediaStoreVersion = currentVersion
+            } else {
+                null
+            }
+            val savedVersion = config.mediaStoreVersion
+            val mediaStoreChanged = if (mShowAll && isRPlus()) {
+                if (currentMediaStoreVersion != null && currentMediaStoreVersion != savedVersion) {
                     true
-                } else if (currentVersion != null) {
+                } else if (currentMediaStoreVersion != null) {
                     false
                 } else {
                     true // couldn't determine version, be safe and write
@@ -1071,65 +1198,100 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 true // non-showAll or pre-R: always write (small per-folder writes)
             }
 
-            if (mediaStoreChanged || !mShowAll) {
-                Thread {
-                    try {
-                        if (mShowAll && mediaToInsert.size > 1000) {
-                            // Mitigation 3: diff-and-update for large showAll loads.
-                            // Instead of REPLACE (which rewrites every row even if unchanged),
-                            // do INSERT OR IGNORE for new rows + targeted UPDATE only for
-                            // rows whose last_modified or size actually changed.
-                            val existing = mediaDB.getAllMediaPaths().associateBy {
-                                it.fullPath.lowercase()
-                            }
-                            val toInsert = ArrayList<Medium>()
-                            val toUpdate = ArrayList<Medium>()
-                            for (medium in mediaToInsert) {
-                                val key = medium.path.lowercase()
-                                val info = existing[key]
-                                if (info == null) {
-                                    toInsert.add(medium)
-                                } else if (info.lastModified != medium.modified || info.size != medium.size) {
-                                    toUpdate.add(medium)
+            // Size-based fallback: if the version says "no change" but we're here because
+            // the fresh scan returned different data than the cache, the version is stale
+            // (poisoned by the old bug). Check the actual DB count and force a write if it
+            // doesn't match the fresh scan count. This runs on the background thread below
+            // to avoid blocking the UI, so we fold it into the write decision there.
+            //
+            // We always start the write thread. Inside it, if the version said "no change",
+            // we do a quick DB count check first — if the count matches, we skip the
+            // expensive diff-and-update (preserving the optimization). If it doesn't match,
+            // the cache is stale and we proceed with the full write.
+            Thread {
+                try {
+                    if (mShowAll && mediaToInsert.size > 1000) {
+                        // If the version check said "no change", verify with a DB count.
+                        // If the count matches, skip the write entirely (the optimization
+                        // still works for the common case of reopening without changes).
+                        if (!mediaStoreChanged) {
+                            val dbCount = mediaDB.getMediaCount()
+                            if (dbCount == mediaToInsert.size) {
+                                logMediaDebug("gotMedia DB write skipped: version matches and DB count $dbCount == scan count ${mediaToInsert.size}")
+                                // Save the version since the DB is already up to date.
+                                if (currentMediaStoreVersion != null) {
+                                    config.mediaStoreVersion = currentMediaStoreVersion
                                 }
+                                return@Thread
                             }
+                            logMediaDebug("gotMedia DB write FORCED: version matched but DB count $dbCount != scan count ${mediaToInsert.size} (poisoned version), forcing write")
+                        }
 
-                            // Mitigation 2: chunk inserts and updates to avoid holding
-                            // the write lock too long. Each batch is its own transaction.
-                            val batchSize = 500
-                            var i = 0
-                            while (i < toInsert.size) {
-                                val end = minOf(i + batchSize, toInsert.size)
-                                mediaDB.insertAllIgnore(toInsert.subList(i, end))
-                                i = end
-                            }
-                            for (medium in toUpdate) {
-                                mediaDB.updateMediumFields(
-                                    fullPath = medium.path,
-                                    filename = medium.name,
-                                    parentPath = medium.parentPath,
-                                    lastModified = medium.modified,
-                                    dateTaken = medium.taken,
-                                    size = medium.size,
-                                    type = medium.type,
-                                    videoDuration = medium.videoDuration,
-                                    mediaStoreId = medium.mediaStoreId
-                                )
-                            }
-                        } else {
-                            // Small loads or per-folder: chunked REPLACE is fine
-                            val batchSize = 500
-                            var i = 0
-                            while (i < mediaToInsert.size) {
-                                val end = minOf(i + batchSize, mediaToInsert.size)
-                                mediaDB.insertAll(mediaToInsert.subList(i, end))
-                                i = end
+                        // Mitigation 3: diff-and-update for large showAll loads.
+                        // Instead of REPLACE (which rewrites every row even if unchanged),
+                        // do INSERT OR IGNORE for new rows + targeted UPDATE only for
+                        // rows whose last_modified or size actually changed.
+                        val existing = mediaDB.getAllMediaPaths().associateBy {
+                            it.fullPath.lowercase()
+                        }
+                        val toInsert = ArrayList<Medium>()
+                        val toUpdate = ArrayList<Medium>()
+                        for (medium in mediaToInsert) {
+                            val key = medium.path.lowercase()
+                            val info = existing[key]
+                            if (info == null) {
+                                toInsert.add(medium)
+                            } else if (info.lastModified != medium.modified || info.size != medium.size) {
+                                toUpdate.add(medium)
                             }
                         }
-                    } catch (e: Exception) {
+
+                        // Mitigation 2: chunk inserts and updates to avoid holding
+                        // the write lock too long. Each batch is its own transaction.
+                        val batchSize = 500
+                        var i = 0
+                        while (i < toInsert.size) {
+                            val end = minOf(i + batchSize, toInsert.size)
+                            mediaDB.insertAllIgnore(toInsert.subList(i, end))
+                            i = end
+                        }
+                        for (medium in toUpdate) {
+                            mediaDB.updateMediumFields(
+                                fullPath = medium.path,
+                                filename = medium.name,
+                                parentPath = medium.parentPath,
+                                lastModified = medium.modified,
+                                dateTaken = medium.taken,
+                                size = medium.size,
+                                type = medium.type,
+                                videoDuration = medium.videoDuration,
+                                mediaStoreId = medium.mediaStoreId
+                            )
+                        }
+                        logMediaDebug("gotMedia DB write completed: ${toInsert.size} inserted, ${toUpdate.size} updated, ${mediaToInsert.size} total")
+                    } else {
+                        // Small loads or per-folder: chunked REPLACE is fine
+                        val batchSize = 500
+                        var i = 0
+                        while (i < mediaToInsert.size) {
+                            val end = minOf(i + batchSize, mediaToInsert.size)
+                            mediaDB.insertAll(mediaToInsert.subList(i, end))
+                            i = end
+                        }
+                        logMediaDebug("gotMedia DB write completed: ${mediaToInsert.size} items (small/per-folder)")
                     }
-                }.start()
-            }
+
+                    // Only save the MediaStore version after the write has completed
+                    // successfully. If the write was interrupted (e.g. activity destroyed
+                    // → GalleryDatabase.destroyInstance() closed the DB mid-write), the
+                    // version stays unset and the next load will retry the write.
+                    if (currentMediaStoreVersion != null) {
+                        config.mediaStoreVersion = currentMediaStoreVersion
+                    }
+                } catch (e: Exception) {
+                    logMediaDebug("gotMedia DB write FAILED: ${e.javaClass.simpleName}: ${e.message}")
+                }
+            }.start()
 
             // Failsafe: sync the parent directory's DB row (tmb / mediaCnt / modified /
             // sortValue) with the freshly-scanned media. This makes pull-to-refresh

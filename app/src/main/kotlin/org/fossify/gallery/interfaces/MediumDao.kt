@@ -35,6 +35,9 @@ interface MediumDao {
     @Query("SELECT full_path, last_modified, size FROM media WHERE deleted_ts = 0")
     fun getAllMediaPaths(): List<MediumPathInfo>
 
+    @Query("SELECT COUNT(*) FROM media WHERE deleted_ts = 0")
+    fun getMediaCount(): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(medium: Medium)
 

@@ -174,6 +174,46 @@ fun Context.clearPerfLog() {
     }
 }
 
+// Always-on diagnostic log for the MediaActivity search/reload flow. Used to diagnose
+// intermittent crashes and the "filter forgotten after returning from an image" issue.
+// Gated by a try/catch so it can never itself cause a crash. Written to media_debug.log
+// in the same external files dir as perf.log so users can retrieve it without root.
+fun Context.logMediaDebug(message: String) {
+    try {
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val logLine = "$timestamp $message\n"
+        val logDir = getExternalFilesDir(null) ?: filesDir
+        File(logDir, "media_debug.log").apply {
+            parentFile?.mkdirs()
+            appendBytes(logLine.toByteArray())
+        }
+    } catch (ignored: Exception) {
+    }
+}
+
+fun Context.clearMediaDebugLog() {
+    try {
+        val logDir = getExternalFilesDir(null) ?: filesDir
+        File(logDir, "media_debug.log").delete()
+    } catch (ignored: Exception) {
+    }
+}
+
+// Persists a crash stack trace to crash.log. Called from the global UncaughtExceptionHandler
+// in App. Always-on (a crash must never be silently lost while we are debugging), best-effort.
+fun Context.logCrash(message: String) {
+    try {
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val logLine = "$timestamp $message\n"
+        val logDir = getExternalFilesDir(null) ?: filesDir
+        File(logDir, "crash.log").apply {
+            parentFile?.mkdirs()
+            appendBytes(logLine.toByteArray())
+        }
+    } catch (ignored: Exception) {
+    }
+}
+
 fun Context.movePinnedDirectoriesToFront(dirs: ArrayList<Directory>): ArrayList<Directory> {
     val foundFolders = ArrayList<Directory>()
     val pinnedFolders = config.pinnedFolders
