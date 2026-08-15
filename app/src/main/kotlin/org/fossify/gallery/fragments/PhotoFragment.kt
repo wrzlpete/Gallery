@@ -406,6 +406,16 @@ class PhotoFragment : ViewPagerFragment() {
         else -> 0
     }
 
+    private fun rotatedToSourceCoord(rotX: Float, rotY: Float, rotation: Int, srcWidth: Int, srcHeight: Int): PointF {
+        return when (rotation) {
+            0 -> PointF(rotX, rotY)
+            90 -> PointF(rotY, srcHeight - rotX)
+            180 -> PointF(srcWidth - rotX, srcHeight - rotY)
+            270 -> PointF(srcWidth - rotY, rotX)
+            else -> PointF(rotX, rotY)
+        }
+    }
+
     private fun rotateViaMatrix(original: Bitmap, orientation: Int): Bitmap {
         val degrees = degreesForRotation(orientation).toFloat()
         return if (degrees == 0f) {
@@ -792,10 +802,15 @@ class PhotoFragment : ViewPagerFragment() {
                     doubleTapZoomScale = getDoubleTapZoomScale(useWidth, useHeight)
 
                     if (mCurrentGestureViewZoom > mInitialZoom + MAX_ZOOM_EQUALITY_TOLERANCE) {
-                        val sCenterX = (width / 2f - mCurrentGestureViewX) / mCurrentGestureViewZoom
-                        val sCenterY = (height / 2f - mCurrentGestureViewY) / mCurrentGestureViewZoom
-                        val sCenter = PointF(sCenterX, sCenterY)
-                        val targetScale = min(maxScale, mCurrentGestureViewZoom)
+                        val zoomRatio = mCurrentGestureViewZoom / mInitialZoom
+                        val targetScale = min(maxScale, scale * zoomRatio)
+
+                        // GestureImageView coordinates are in rotated drawable space (Glide applies EXIF rotation).
+                        // SubsamplingScaleImageView expects unrotated source coordinates.
+                        val rotX = (width / 2f - mCurrentGestureViewX) / mCurrentGestureViewZoom
+                        val rotY = (height / 2f - mCurrentGestureViewY) / mCurrentGestureViewZoom
+                        val sCenter = rotatedToSourceCoord(rotX, rotY, degreesForRotation(mImageOrientation), sWidth, sHeight)
+
                         AnimationBuilder(sCenter, targetScale).apply {
                             duration = 10L
                             start()
