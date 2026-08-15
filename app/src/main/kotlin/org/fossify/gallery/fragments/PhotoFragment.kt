@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.PointF
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
@@ -101,6 +102,7 @@ import java.io.FileOutputStream
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.min
 
 class PhotoFragment : ViewPagerFragment() {
     private val DEFAULT_DOUBLE_TAP_ZOOM = 2f
@@ -127,6 +129,8 @@ class PhotoFragment : ViewPagerFragment() {
     private var mScreenWidth = 0
     private var mScreenHeight = 0
     private var mCurrentGestureViewZoom = 1f
+    private var mCurrentGestureViewX = 0f
+    private var mCurrentGestureViewY = 0f
     private var mInitialZoom = 1f
     private var mHasInitialZoom = false
 
@@ -614,6 +618,8 @@ class PhotoFragment : ViewPagerFragment() {
                 }
 
                 mCurrentGestureViewZoom = state.zoom
+                mCurrentGestureViewX = state.x
+                mCurrentGestureViewY = state.y
             }
         })
     }
@@ -784,6 +790,17 @@ class PhotoFragment : ViewPagerFragment() {
                     val useWidth = if (mImageOrientation == ORIENTATION_ROTATE_90 || mImageOrientation == ORIENTATION_ROTATE_270) sHeight else sWidth
                     val useHeight = if (mImageOrientation == ORIENTATION_ROTATE_90 || mImageOrientation == ORIENTATION_ROTATE_270) sWidth else sHeight
                     doubleTapZoomScale = getDoubleTapZoomScale(useWidth, useHeight)
+
+                    if (mCurrentGestureViewZoom > mInitialZoom + MAX_ZOOM_EQUALITY_TOLERANCE) {
+                        val sCenterX = (width / 2f - mCurrentGestureViewX) / mCurrentGestureViewZoom
+                        val sCenterY = (height / 2f - mCurrentGestureViewY) / mCurrentGestureViewZoom
+                        val sCenter = PointF(sCenterX, sCenterY)
+                        val targetScale = min(maxScale, mCurrentGestureViewZoom)
+                        AnimationBuilder(sCenter, targetScale).apply {
+                            duration = 10L
+                            start()
+                        }
+                    }
                 }
 
                 override fun onImageLoadError(e: Exception) {
