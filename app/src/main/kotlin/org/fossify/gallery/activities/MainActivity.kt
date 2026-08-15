@@ -650,20 +650,25 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
     private fun getDirectories(forceRestart: Boolean = false, fullVolumeScan: Boolean = false, filesystemScan: Boolean = true, source: String = "") {
         logPerf("getDirectories: called forceRestart=$forceRestart fullVolumeScan=$fullVolumeScan filesystemScan=$filesystemScan source='$source'")
         if (mIsGettingDirs) {
-            mShouldStopFetching = true
             val elapsed = SystemClock.elapsedRealtime() - mDirsLoadStartTime
             if (elapsed > MAX_DIRS_LOAD_TIME_MS) {
                 logPerf("getDirectories: scan stuck for ${elapsed} ms, forcing restart")
+                mShouldStopFetching = true
                 mIsGettingDirs = false
                 mDirsLoadStartTime = 0L
-            } else if (forceRestart) {
+                // Fall through to start a new scan
+            } else if (forceRestart && source != "pull-to-refresh") {
                 logPerf("getDirectories: scan already running for ${elapsed} ms, marking pending restart")
+                mShouldStopFetching = true
                 mPendingRestart = true
                 mPendingFullVolumeScan = fullVolumeScan
                 mPendingFilesystemScan = filesystemScan
                 return
             } else {
-                logPerf("getDirectories: scan already running for ${elapsed} ms, skipping")
+                // For pull-to-refresh and non-forced calls, let the current scan finish.
+                // The running scan already queries MediaStore and will pick up new media.
+                // Interrupting it and starting a new scan just doubles the work.
+                logPerf("getDirectories: scan already running for ${elapsed} ms, letting it finish")
                 return
             }
         }
@@ -1245,6 +1250,12 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val albumCovers = config.parseAlbumCovers()
             val includedFolders = config.includedFolders
             val noMediaFolders = getNoMediaFoldersSync()
+            // Pre-compute a HashSet of lowercase noMedia folder paths for O(1) lookup in the
+            // refresh loop. This replaces per-directory File.exists() calls (106s on cold SD
+            // card) with a single MediaStore query (~5-151ms) + instant HashSet lookups.
+            val noMediaFoldersLower = noMediaFolders.mapTo(HashSet()) {
+                it.lowercase(Locale.getDefault())
+            }
             val tempFolderPath = config.tempFolderPath
             val getProperFileSize = config.directorySorting and SORT_BY_SIZE != 0
             val dirPathsToRemove = ArrayList<String>()
@@ -1255,8 +1266,29 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val foldersWithRecentMedia = mLastMediaFetcher!!.getFoldersWithRecentMedia()
             logPerf("gotDirectories: getFoldersWithRecentMedia() took ${SystemClock.elapsedRealtime() - stepStart} ms, found ${foldersWithRecentMedia.size} folders")
 
-            if (!forceFullScan && foldersWithRecentMedia.isEmpty()) {
-                logPerf("gotDirectories: no media changes detected, skipping full scan")
+            val onlyVersionChanged = foldersWithRecentMedia.size == 1 &&
+                foldersWithRecentMedia.contains(MediaFetcher.MEDIA_STORE_CHANGED_SENTINEL)
+            // Real folders with recent media (excluding the MediaStore version-changed sentinel).
+            // When non-empty, MediaStore has already indexed new media, so we can skip the
+            // expensive filesystem walk and full MediaStore folder query.
+            val realFoldersWithRecentMedia = foldersWithRecentMedia.filter {
+                it != MediaFetcher.MEDIA_STORE_CHANGED_SENTINEL
+            }
+
+            // Early exit when no real media changes detected — even for forceFullScan (pull-to-refresh).
+            // Previously, forceFullScan=true would continue to the filesystem walk and MediaStore query
+            // even when getFoldersWithRecentMedia found nothing, wasting 8-12 seconds on every
+            // pull-to-refresh that found no changes. MediaStore on Android 11+ auto-indexes new media
+            // within seconds, so if getFoldersWithRecentMedia returns empty, there is genuinely
+            // nothing new. The checkLastMediaChanged poll will catch any delayed indexing.
+            //
+            // Exception: fullVolumeScan=true (menu-based "Full Media Scan" / endboss scan). The user
+            // explicitly asked for a thorough scan, so we always continue to the refresh loop and
+            // folder discovery even if MediaStore reports no recent changes. The scanVolume() call
+            // at the top of gotDirectories may still index files that getFoldersWithRecentMedia
+            // hasn't seen yet, and the post-scan refresh will pick those up.
+            if (!fullVolumeScan && (foldersWithRecentMedia.isEmpty() || onlyVersionChanged)) {
+                logPerf("gotDirectories: no media changes detected, skipping full scan${if (onlyVersionChanged) " (version-only change)" else ""}")
                 mLoadedInitialPhotos = true
                 if (config.appRunCount > 1) {
                     checkLastMediaChanged()
@@ -1291,11 +1323,13 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val lastModifieds: HashMap<String, Long>
             val dateTakens: HashMap<String, Long>
             val android11Files: HashMap<String, ArrayList<Medium>>?
-            val onlyVersionChanged = foldersWithRecentMedia.size == 1 &&
-                foldersWithRecentMedia.contains(MediaFetcher.MEDIA_STORE_CHANGED_SENTINEL)
 
-            if ((forceFullScan && foldersWithRecentMedia.isEmpty()) || onlyVersionChanged) {
-                logPerf("gotDirectories: skipping heavy queries (${if (onlyVersionChanged) "version-only change" else "no changes"})")
+            if (realFoldersWithRecentMedia.isEmpty()) {
+                // No real folders to refresh (only version-only change or fullVolumeScan with
+                // no recent media). Skip the heavy lastModifieds/dateTakens queries — they're
+                // only used by getFilesFrom() for folders in foldersWithRecentMedia, and if
+                // there are none, the queries are wasted (2s+ for 155k rows).
+                logPerf("gotDirectories: skipping heavy queries (${if (onlyVersionChanged) "version-only change" else "no real recent media"})")
                 lastModifieds = HashMap()
                 dateTakens = HashMap()
                 android11Files = null
@@ -1365,16 +1399,28 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     val folderPath = directory.path
                     if (folderPath != FAVORITES && folderPath != RECYCLE_BIN && folderPath != tempFolderPath) {
                         if (folderPath !in foldersWithRecentMedia) {
-                            if (forceFullScan) {
-                                val folderHasNoMedia = File(folderPath, NOMEDIA).exists()
-                                if (folderHasNoMedia != directory.hasNoMedia) {
-                                    directory.hasNoMedia = folderHasNoMedia
-                                    updateDBDirectory(directory)
-                                    cachedDirectoriesChanged = true
-                                    if (folderHasNoMedia && !config.shouldShowHidden
-                                        && !folderPath.isThisOrParentIncluded(includedFolders)) {
-                                        hiddenDirPaths.add(folderPath)
-                                    }
+                            // Check .nomedia status via MediaStore data (noMediaFoldersLower) instead of
+                            // File.exists(). This is a single MediaStore query (~5-151ms) + O(1) HashSet
+                            // lookups, vs 785 File.exists() calls that took 106s on a cold SD card.
+                            //
+                            // MediaStore data is fresh on internal storage (inotify watchers) but can
+                            // be stale on SD cards (no inotify — only scanFile/scanVolume indexes them).
+                            // For the endboss scan (fullVolumeScan=true), scanVolume() already ran and
+                            // indexed everything, so we also do File.exists() as a ground-truth check
+                            // to catch any .nomedia files that scanVolume might have missed. The SD card
+                            // is warm at this point so File.exists() is fast (~2ms per dir).
+                            val folderHasNoMedia = if (fullVolumeScan) {
+                                File(folderPath, NOMEDIA).exists()
+                            } else {
+                                folderPath.lowercase(Locale.getDefault()) in noMediaFoldersLower
+                            }
+                            if (folderHasNoMedia != directory.hasNoMedia) {
+                                directory.hasNoMedia = folderHasNoMedia
+                                updateDBDirectory(directory)
+                                cachedDirectoriesChanged = true
+                                if (folderHasNoMedia && !config.shouldShowHidden
+                                    && !folderPath.isThisOrParentIncluded(includedFolders)) {
+                                    hiddenDirPaths.add(folderPath)
                                 }
                             }
                             cachedDirsSkipped++
@@ -1512,7 +1558,16 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     // so skip the filesystem walk and just query MediaStore.
                     // For Level 2 (fullVolumeScan): scanVolume already indexed everything, so we
                     // skip the filesystem walk and just query MediaStore.
-                    if (forceFullScan && filesystemScan && !fullVolumeScan && !mMediaScanCompleted && Environment.isExternalStorageManager()) {
+                    //
+                    // Optimization: when realFoldersWithRecentMedia is non-empty, MediaStore has
+                    // already indexed the new media. The filesystem walk is redundant — the MediaStore
+                    // query will find any new folders. The filesystem walk is extremely slow on SD
+                    // cards (49s observed for 8 listFiles() calls on a slow SD card). Skip it when
+                    // MediaStore already knows about the changes.
+                    val shouldDoFilesystemWalk = forceFullScan && filesystemScan && !fullVolumeScan &&
+                        !mMediaScanCompleted && Environment.isExternalStorageManager() &&
+                        realFoldersWithRecentMedia.isEmpty()
+                    if (shouldDoFilesystemWalk) {
                         // Step 1: Filesystem walk to find new directories (fast - directory listing only)
                         val fsStart = SystemClock.elapsedRealtime()
                         val fsNewFolders = mLastMediaFetcher!!.getNewFoldersViaFilesystem(knownFolderPaths)
@@ -1555,10 +1610,13 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                         }
                         MediaFetcher.MediaStoreFolderInfo(msInfo.allParentPaths, mergedNewFolders, msInfo.mediaByFolder)
                     } else {
-                        // Level 1 (fullVolumeScan) or post-scan refresh: just query MediaStore.
-                        // For fullVolumeScan, scanVolume already indexed everything in the background.
-                        // For post-scan refresh (mMediaScanCompleted=true), scanVolume already ran.
-                        // The filesystem walk + scanFile is skipped to avoid redundant work.
+                        // Level 1 (fullVolumeScan), post-scan refresh, Level 0 poll, or
+                        // pull-to-refresh with realFoldersWithRecentMedia non-empty: just query
+                        // MediaStore. The filesystem walk is skipped because:
+                        // - fullVolumeScan: scanVolume already indexed everything
+                        // - mMediaScanCompleted: scanVolume already ran (post-scan refresh)
+                        // - realFoldersWithRecentMedia non-empty: MediaStore already indexed the
+                        //   new media, so the filesystem walk is redundant (and very slow on SD cards)
                         mLastMediaFetcher!!.getMediaStoreFolderInfo(
                             knownFolders = knownFolderPaths,
                             collectMedia = true,
