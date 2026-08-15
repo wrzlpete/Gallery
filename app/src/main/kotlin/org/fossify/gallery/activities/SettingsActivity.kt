@@ -112,7 +112,7 @@ class SettingsActivity : SimpleActivity() {
         setupImportFavorites()
         setupExportSettings()
         setupImportSettings()
-        setupPerfLogging()
+        setupDebugLogging()
 
         arrayOf(
             binding.settingsColorCustomizationSectionLabel,
@@ -134,7 +134,7 @@ class SettingsActivity : SimpleActivity() {
         }
 
         binding.settingsDebugLabel.beVisibleIf(BuildConfig.DEBUG)
-        binding.settingsPerfLoggingHolder.beVisibleIf(BuildConfig.DEBUG)
+        binding.settingsDebugLoggingHolder.beVisibleIf(BuildConfig.DEBUG)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, resultData: Intent?) {
@@ -915,11 +915,11 @@ class SettingsActivity : SimpleActivity() {
         }
     }
 
-    private fun setupPerfLogging() {
-        binding.settingsPerfLogging.isChecked = config.perfLoggingEnabled
-        binding.settingsPerfLoggingHolder.setOnClickListener {
-            binding.settingsPerfLogging.toggle()
-            config.perfLoggingEnabled = binding.settingsPerfLogging.isChecked
+    private fun setupDebugLogging() {
+        binding.settingsDebugLogging.isChecked = config.debugLoggingEnabled
+        binding.settingsDebugLoggingHolder.setOnClickListener {
+            binding.settingsDebugLogging.toggle()
+            config.debugLoggingEnabled = binding.settingsDebugLogging.isChecked
         }
     }
 
@@ -1013,7 +1013,7 @@ class SettingsActivity : SimpleActivity() {
                 put(THUMBNAIL_SPACING, config.thumbnailSpacing)
                 put(FILE_ROUNDED_CORNERS, config.fileRoundedCorners)
                 put(SEARCH_ALL_FILES_BY_DEFAULT, config.searchAllFilesByDefault)
-                put(PERF_LOGGING_ENABLED, config.perfLoggingEnabled)
+                put(DEBUG_LOGGING_ENABLED, config.debugLoggingEnabled)
             }
 
             exportSettings(configItems)
@@ -1159,7 +1159,7 @@ class SettingsActivity : SimpleActivity() {
                 THUMBNAIL_SPACING -> config.thumbnailSpacing = value.toInt()
                 FILE_ROUNDED_CORNERS -> config.fileRoundedCorners = value.toBoolean()
                 SEARCH_ALL_FILES_BY_DEFAULT -> config.searchAllFilesByDefault = value.toBoolean()
-                PERF_LOGGING_ENABLED -> config.perfLoggingEnabled = value.toBoolean()
+                DEBUG_LOGGING_ENABLED -> config.debugLoggingEnabled = value.toBoolean()
                 ALBUM_COVERS -> {
                     val existingCovers = config.parseAlbumCovers()
                     val existingCoverPaths = existingCovers.map { it.path }.toMutableList() as ArrayList<String>

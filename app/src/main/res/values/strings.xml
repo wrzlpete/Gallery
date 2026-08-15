@@ -246,7 +246,7 @@
 
     <!-- Setting sections -->
     <string name="debug">Debug</string>
-    <string name="enable_perf_logging">Enable performance logging</string>
+    <string name="enable_debug_logging">Enable debug logging</string>
     <string name="thumbnails">Thumbnails</string>
     <string name="fullscreen_media">Fullscreen media</string>
     <string name="extended_details">Extended details</string>

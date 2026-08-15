@@ -1127,17 +1127,17 @@
                 android:text="@string/debug" />
 
             <RelativeLayout
-                android:id="@+id/settings_perf_logging_holder"
+                android:id="@+id/settings_debug_logging_holder"
                 style="@style/SettingsHolderSwitchStyle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content">
 
                 <org.fossify.commons.views.MyMaterialSwitch
-                    android:id="@+id/settings_perf_logging"
+                    android:id="@+id/settings_debug_logging"
                     style="@style/SettingsSwitchStyle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="@string/enable_perf_logging" />
+                    android:text="@string/enable_debug_logging" />
 
             </RelativeLayout>
         </LinearLayout>

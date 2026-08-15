@@ -152,7 +152,7 @@ val Context.dateTakensDB: DateTakensDao
 val Context.recycleBin: File get() = filesDir
 
 fun Context.logPerf(message: String) {
-    if (!config.perfLoggingEnabled) return
+    if (!config.debugLoggingEnabled) return
     try {
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val logLine = "$timestamp $message\n"
@@ -166,7 +166,7 @@ fun Context.logPerf(message: String) {
 }
 
 fun Context.clearPerfLog() {
-    if (!config.perfLoggingEnabled) return
+    if (!config.debugLoggingEnabled) return
     try {
         val logDir = getExternalFilesDir(null) ?: filesDir
         File(logDir, "perf.log").delete()
@@ -174,11 +174,12 @@ fun Context.clearPerfLog() {
     }
 }
 
-// Always-on diagnostic log for the MediaActivity search/reload flow. Used to diagnose
-// intermittent crashes and the "filter forgotten after returning from an image" issue.
-// Gated by a try/catch so it can never itself cause a crash. Written to media_debug.log
-// in the same external files dir as perf.log so users can retrieve it without root.
+// Diagnostic log for the MediaActivity search/reload/OOM flow. Gated by the same
+// config.debugLoggingEnabled flag as logPerf — the two logs serve the same debugging
+// audience and should be toggled together from Settings. logCrash (below) is the only
+// log that stays always-on, since a crash must never be silently lost.
 fun Context.logMediaDebug(message: String) {
+    if (!config.debugLoggingEnabled) return
     try {
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val logLine = "$timestamp $message\n"
@@ -192,6 +193,7 @@ fun Context.logMediaDebug(message: String) {
 }
 
 fun Context.clearMediaDebugLog() {
+    if (!config.debugLoggingEnabled) return
     try {
         val logDir = getExternalFilesDir(null) ?: filesDir
         File(logDir, "media_debug.log").delete()
@@ -200,7 +202,9 @@ fun Context.clearMediaDebugLog() {
 }
 
 // Persists a crash stack trace to crash.log. Called from the global UncaughtExceptionHandler
-// in App. Always-on (a crash must never be silently lost while we are debugging), best-effort.
+// in App. Always-on (a crash must never be silently lost), best-effort. Not gated by any
+// config flag — even with debug logging disabled, crashes are recorded so they can be
+// reported after the fact.
 fun Context.logCrash(message: String) {
     try {
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
