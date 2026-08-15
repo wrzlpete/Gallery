@@ -770,6 +770,8 @@ class MediaFetcher(val context: Context) {
         media.sortWith { o1, o2 ->
             o1 as Medium
             o2 as Medium
+            val useNameTiebreaker =
+                sorting and (SORT_BY_SIZE or SORT_BY_DATE_MODIFIED or SORT_BY_DATE_TAKEN) != 0
             var result = when {
                 sorting and SORT_BY_NAME != 0 -> {
                     if (sorting and SORT_USE_NUMERIC_VALUE != 0) {
@@ -790,6 +792,23 @@ class MediaFetcher(val context: Context) {
                 sorting and SORT_BY_SIZE != 0 -> o1.size.compareTo(o2.size)
                 sorting and SORT_BY_DATE_MODIFIED != 0 -> o1.modified.compareTo(o2.modified)
                 else -> o1.taken.compareTo(o2.taken)
+            }
+
+            // Fall back to name sorting when the primary sort values are equal, so that items
+            // sharing the same date/size get a stable, predictable order instead of appearing
+            // random. The tiebreaker is computed before the descending flip below so that it
+            // follows the primary sort direction (e.g. descending date -> Z-A within same date).
+            // See https://github.com/FossifyOrg/Gallery/issues/1112
+            if (result == 0 && useNameTiebreaker) {
+                result = if (sorting and SORT_USE_NUMERIC_VALUE != 0) {
+                    AlphanumericComparator().compare(
+                        o1.name.normalizeString().lowercase(Locale.getDefault()),
+                        o2.name.normalizeString().lowercase(Locale.getDefault())
+                    )
+                } else {
+                    o1.name.normalizeString().lowercase(Locale.getDefault())
+                        .compareTo(o2.name.normalizeString().lowercase(Locale.getDefault()))
+                }
             }
 
             if (sorting and SORT_DESCENDING != 0) {
