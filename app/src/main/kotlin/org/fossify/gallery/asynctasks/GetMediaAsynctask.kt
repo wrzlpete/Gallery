@@ -9,6 +9,8 @@ import org.fossify.commons.helpers.SORT_BY_SIZE
 import org.fossify.commons.helpers.isRPlus
 import org.fossify.gallery.extensions.config
 import org.fossify.gallery.extensions.getFavoritePaths
+import org.fossify.gallery.extensions.logMediaDebug
+import org.fossify.gallery.extensions.logPerf
 import org.fossify.gallery.helpers.*
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.models.ThumbnailItem
@@ -22,6 +24,20 @@ class GetMediaAsynctask(
     private val mediaFetcher = MediaFetcher(context)
 
     override fun doInBackground(vararg params: Void): ArrayList<ThumbnailItem> {
+        try {
+            return doFetchMedia()
+        } catch (e: Throwable) {
+            // Catch Throwable (not Exception) so OutOfMemoryError is caught. The MediaStore
+            // cursor for 143k+ items can exhaust the heap during moveToNext(). Return whatever
+            // we have (empty list if the OOM happened early) — the caller's gotMedia will keep
+            // the existing cached data if the new result is empty, and the next load will retry.
+            context.logPerf("GetMediaAsynctask: ${e.javaClass.simpleName}: ${e.message}")
+            context.logMediaDebug("GetMediaAsynctask OOM/ERROR: ${e.javaClass.simpleName}: ${e.message}, returning empty list")
+            return ArrayList()
+        }
+    }
+
+    private fun doFetchMedia(): ArrayList<ThumbnailItem> {
         val pathToUse = if (showAll) SHOW_ALL else mPath
         val folderGrouping = context.config.getFolderGrouping(pathToUse)
         val folderSorting = context.config.getFolderSorting(pathToUse)

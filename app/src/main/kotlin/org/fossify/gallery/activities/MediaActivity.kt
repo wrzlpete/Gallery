@@ -794,7 +794,16 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             showAll = mShowAll
         ) {
             ensureBackgroundThread {
-                val oldMedia = mMedia.clone() as ArrayList<ThumbnailItem>
+                // Extract only the paths from the old media list — not a full clone. The
+                // cleanup below only needs paths to find stale DB entries. A shallow clone
+                // (ArrayList.clone()) keeps all 143k old Medium objects alive (~100MB at
+                // ~760 bytes each: 3 String fields with ~80-char paths + primitives) while
+                // the async task is simultaneously building 143k new Medium objects from the
+                // cursor — this peak was a major contributor to the OOM crash in
+                // getMediaStoreFolderInfo. Extracting only path strings into a HashSet
+                // (~20MB) lets the old Medium objects be GC'd immediately, freeing ~80MB
+                // of peak memory during the async task callback.
+                val oldPaths = mMedia.mapNotNull { (it as? Medium)?.path }.toHashSet()
                 val newMedia = it
                 try {
                     gotMedia(newMedia, false)
@@ -803,15 +812,14 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                     // Use a HashSet so contains() is O(1); a List would make this O(N²)
                     // which is catastrophic for "Show all" with 100k+ cached items.
                     val newPaths = newMedia.mapNotNull { it as? Medium }.map { it.path }.toHashSet()
-                    oldMedia
-                        .mapNotNull { it as? Medium }
-                        .filter { it.path !in newPaths }
+                    oldPaths
+                        .filter { it !in newPaths }
                         .forEach {
-                            if (mPath == FAVORITES && getDoesFilePathExist(it.path)) {
-                                favoritesDB.deleteFavoritePath(it.path)
-                                mediaDB.updateFavorite(it.path, false)
+                            if (mPath == FAVORITES && getDoesFilePathExist(it)) {
+                                favoritesDB.deleteFavoritePath(it)
+                                mediaDB.updateFavorite(it, false)
                             } else {
-                                mediaDB.deleteMediumPath(it.path)
+                                mediaDB.deleteMediumPath(it)
                             }
                         }
                 } catch (e: Exception) {
@@ -1133,6 +1141,13 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         // while the user is in a different activity.
         if (!mIsResumed || isFinishing || isDestroyed) {
             logMediaDebug("gotMedia: dropping (not resumed) size=${media.size} isFromCache=$isFromCache")
+            return
+        }
+        // If the fresh scan returned empty but we already have cached data, keep the cache.
+        // This happens when getMediaStoreFolderInfo catches an OOM and returns partial/empty
+        // results. Replacing 143k cached items with 0 items would show an empty grid.
+        if (!isFromCache && media.isEmpty() && mMedia.isNotEmpty()) {
+            logMediaDebug("gotMedia: fresh scan returned empty, keeping cached ${mMedia.size} items")
             return
         }
         checkLastMediaChanged()

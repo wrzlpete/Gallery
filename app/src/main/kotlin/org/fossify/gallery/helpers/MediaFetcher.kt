@@ -548,8 +548,16 @@ class MediaFetcher(val context: Context) {
                     }
                 }
             }
-        } catch (e: Exception) {
-            context.logPerf("getMediaStoreFolderInfo: EXCEPTION ${e.message}")
+        } catch (e: Throwable) {
+            // Catch Throwable (not Exception) so OutOfMemoryError is caught. With 143k+ media
+            // items, the CursorWindow allocation during moveToNext() can exhaust the heap if
+            // multiple large data structures are alive simultaneously (previous mMedia list +
+            // oldPaths HashSet + DB write thread's existing map + new cursor data). Returning
+            // partial results (whatever was collected before the OOM) is better than crashing —
+            // the caller will get fewer items than the cache had, and gotMedia will keep the
+            // cached data if the fresh scan returns empty. The next load will retry.
+            context.logPerf("getMediaStoreFolderInfo: ${e.javaClass.simpleName}: ${e.message}")
+            context.logMediaDebug("getMediaStoreFolderInfo OOM/ERROR: ${e.javaClass.simpleName}: ${e.message}, partial media folders=${mediaByFolder?.size ?: 0}")
         }
         if (shouldStop) {
             context.logPerf("getMediaStoreFolderInfo: interrupted by shouldStop, returning empty to avoid partial results")
