@@ -37,3 +37,28 @@ Experience the beauty of intuitive material design with dynamic themes. Want mor
 <img alt="App image" src="fastlane/metadata/android/en-US/images/phoneScreenshots/2_en-US.png" width="30%">
 <img alt="App image" src="fastlane/metadata/android/en-US/images/phoneScreenshots/3_en-US.png" width="30%">
 </div>
+
+---
+
+## Changes in this fork
+
+This fork focuses on **performance** and **bug fixes** for large media libraries. All changes are backwards-compatible and don't alter the user-facing UI design.
+
+### Performance
+
+- **Faster cold start**: lower background thread priority and skip filesystem checks for cached folders to reduce UI freezes on launch
+- **Incremental folder scanning**: three-level media scanning strategy with targeted MediaProvider indexing instead of full filesystem walks
+- **"Show all" optimization**: MediaStore batched queries on Android 11+ with DB diff-updates and write deduplication, skipping unnecessary folder scans
+- **Search optimization**: generation tokens drop stale filter results; deletion path lookups use HashSet instead of list scans
+- **Memory optimization**: path-only HashSet extraction instead of cloning full Medium lists during media refresh, with OOM recovery guards
+- **`.nomedia` caching**: persist `.nomedia` status in DB to eliminate filesystem checks during folder filtering
+- **Configurable debug logging**: toggle debug logging in Debug settings
+
+### Bug fixes
+
+- **UI lag during media scan** ([upstream issue #1092](https://github.com/FossifyOrg/Gallery/issues/1092), [PR #1115](https://github.com/FossifyOrg/Gallery/pull/1115)): batch directory adapter updates instead of calling `setupAdapter()` for every folder during cached directory refresh and new folder discovery — with many folders this flooded the UI thread, causing taps to be delayed or ignored
+- **Zoom reset on image load** ([upstream issue #1101](https://github.com/FossifyOrg/Gallery/issues/1101), [PR #1117](https://github.com/FossifyOrg/Gallery/pull/1117)): fix zoom/pan loss when opening images and zooming before the full-resolution tile loads — replaced Glide-based decoder with direct BitmapFactory decoding, transfer zoom state from GestureImageView to SubsamplingScaleImageView with correct coordinate/scale transformation for EXIF-rotated images
+- **State corruption in MediaActivity**: move media list to instance field to prevent concurrent Activity instances from overwriting each other's state; add lifecycle guards to prevent background callbacks after onPause
+- **Hidden/excluded folder bypass**: prevent hidden and excluded folders from bypassing visibility filters in MediaStore scans
+- **Thumbnail/metadata refresh**: refresh directory thumbnails and metadata immediately after cover changes and deletions
+- **Folder sort stability**: add secondary sort by location when primary sort values are equal (internal location first)
