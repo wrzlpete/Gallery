@@ -62,3 +62,4 @@ This fork focuses on **performance** and **bug fixes** for large media libraries
 - **Hidden/excluded folder bypass**: prevent hidden and excluded folders from bypassing visibility filters in MediaStore scans
 - **Thumbnail/metadata refresh**: refresh directory thumbnails and metadata immediately after cover changes and deletions
 - **Folder sort stability**: add secondary sort by location when primary sort values are equal (internal location first)
+- **Media sort stability** ([upstream issue #1112](https://github.com/FossifyOrg/Gallery/issues/1112)): fall back to name sorting when media share the same date modified, date taken, or size — the tiebreaker follows the primary sort direction (e.g. descending date → Z-A within same date), replacing the previous unpredictable order
