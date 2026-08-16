@@ -83,6 +83,7 @@ import org.fossify.gallery.adapters.PortraitPhotosAdapter
 import org.fossify.gallery.databinding.PagerPhotoItemBinding
 import org.fossify.gallery.extensions.config
 import org.fossify.gallery.extensions.getBottomActionsHeight
+import org.fossify.gallery.extensions.logPerf
 import org.fossify.gallery.extensions.sendFakeClick
 import org.fossify.gallery.helpers.ColorModeHelper
 import org.fossify.gallery.helpers.HIGH_TILE_DPI
@@ -133,6 +134,8 @@ class PhotoFragment : ViewPagerFragment() {
     private var mCurrentGestureViewY = 0f
     private var mInitialZoom = 1f
     private var mHasInitialZoom = false
+    private var mUserHasZoomed = false
+    private var mIsGlideReloading = false
 
     private var mStoredShowExtendedDetails = false
     private var mStoredHideExtendedDetails = false
@@ -429,6 +432,8 @@ class PhotoFragment : ViewPagerFragment() {
 
     private fun loadImage() {
         mHasInitialZoom = false
+        mUserHasZoomed = false
+        mIsGlideReloading = false
         checkScreenDimensions()
 
         if (mMedium.isPortrait() && context != null) {
@@ -553,11 +558,22 @@ class PhotoFragment : ViewPagerFragment() {
                     dataSource: DataSource,
                     isFirstResource: Boolean
                 ): Boolean {
+                    val wasReload = mHasInitialZoom
+                    context?.logPerf("PhotoFragment: onResourceReady, dataSource=$dataSource, wasReload=$wasReload, mUserHasZoomed=$mUserHasZoomed")
+                    if (wasReload && mUserHasZoomed) {
+                        mIsGlideReloading = true
+                    }
                     applyProperColorMode(resource)
                     val allowZoomingImages = context?.config?.allowZoomingImages ?: true
                     binding.gesturesView.controller.settings.isZoomEnabled = mMedium.isRaw() || mCurrentRotationDegrees != 0 || allowZoomingImages == false
                     if (mIsFragmentVisible && addZoomableView) {
                         scheduleZoomableView()
+                    }
+                    if (mIsGlideReloading) {
+                        binding.gesturesView.post {
+                            mIsGlideReloading = false
+                            context?.logPerf("PhotoFragment: Glide reload complete, mIsGlideReloading cleared")
+                        }
                     }
                     return false
                 }
@@ -625,11 +641,21 @@ class PhotoFragment : ViewPagerFragment() {
                     }
                     settings.doubleTapZoom = target.coerceAtMost(settings.maxZoom)
                     mHasInitialZoom = true
+                    context?.logPerf("PhotoFragment: initial zoom captured, mInitialZoom=$mInitialZoom, fitZoom=$fitZoom")
+                }
+
+                if (mIsGlideReloading && mUserHasZoomed) {
+                    context?.logPerf("PhotoFragment: ignoring state change during Glide reload (user has zoomed), state.zoom=${state.zoom}")
+                    return
                 }
 
                 mCurrentGestureViewZoom = state.zoom
                 mCurrentGestureViewX = state.x
                 mCurrentGestureViewY = state.y
+
+                if (state.zoom > mInitialZoom + MAX_ZOOM_EQUALITY_TOLERANCE) {
+                    mUserHasZoomed = true
+                }
             }
         })
     }
@@ -801,6 +827,8 @@ class PhotoFragment : ViewPagerFragment() {
                     val useHeight = if (mImageOrientation == ORIENTATION_ROTATE_90 || mImageOrientation == ORIENTATION_ROTATE_270) sWidth else sHeight
                     doubleTapZoomScale = getDoubleTapZoomScale(useWidth, useHeight)
 
+                    context?.logPerf("PhotoFragment: onReady, mCurrentGestureViewZoom=$mCurrentGestureViewZoom, mInitialZoom=$mInitialZoom, mUserHasZoomed=$mUserHasZoomed, mIsGlideReloading=$mIsGlideReloading")
+
                     if (mCurrentGestureViewZoom > mInitialZoom + MAX_ZOOM_EQUALITY_TOLERANCE) {
                         val zoomRatio = mCurrentGestureViewZoom / mInitialZoom
                         val targetScale = min(maxScale, scale * zoomRatio)
@@ -815,6 +843,9 @@ class PhotoFragment : ViewPagerFragment() {
                             duration = 10L
                             start()
                         }
+                        context?.logPerf("PhotoFragment: onReady zoom transfer applied, zoomRatio=$zoomRatio, targetScale=$targetScale")
+                    } else {
+                        context?.logPerf("PhotoFragment: onReady no zoom transfer (guard failed)")
                     }
                 }
 
@@ -1006,6 +1037,37 @@ class PhotoFragment : ViewPagerFragment() {
             if (mWasInit && mMedium.isPortrait()) {
                 photoPortraitStripeWrapper.animate().alpha(if (isFullscreen) 0f else 1f).start()
             }
+        }
+    }
+
+    /**
+     * Called by the pager adapter when the media list is refreshed in-place.
+     *
+     * Updates [mMedium] with fresh metadata from the background re-scan while preserving
+     * the already-resolved file path (which may differ from the original when the medium
+     * was opened via a content:// URI). Only triggers a reload when the Glide signature
+     * (path + modified + size) actually changed — i.e. the file content really changed —
+     * so zoom state is preserved in the common case of identical content with refreshed
+     * DB metadata.
+     */
+    override fun updateMedium(medium: Medium) {
+        arguments?.putSerializable(MEDIUM, medium)
+        if (!mWasInit) return
+
+        val oldSignature = mMedium.getSignature()
+        val resolvedPath = mMedium.path
+        mMedium = medium
+        // Preserve the path that was resolved in onCreateView (may be a real file path
+        // resolved from a content:// URI, or a cache file path for empty content URIs).
+        if (resolvedPath != mOriginalPath) {
+            mMedium.path = resolvedPath
+        }
+
+        if (mMedium.getSignature() != oldSignature) {
+            // File content actually changed — reload to pick up the new image.
+            // This intentionally resets zoom state, which is correct because the
+            // displayed image is no longer the one the user was zooming into.
+            loadImage()
         }
     }
 
