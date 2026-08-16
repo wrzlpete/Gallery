@@ -25,6 +25,16 @@ abstract class ViewPagerFragment : Fragment() {
 
     abstract fun fullscreenToggled(isFullscreen: Boolean)
 
+    /**
+     * Called when the adapter's media list is refreshed in-place (e.g. after a background
+     * re-scan). Gives surviving fragments a chance to pick up updated metadata (modified
+     * timestamp, size, media_store_id, …) without being destroyed and recreated, which
+     * would lose user state such as zoom level.
+     *
+     * The default implementation is a no-op; subclasses override as needed.
+     */
+    open fun updateMedium(medium: Medium) {}
+
     interface FragmentListener {
         fun fragmentClicked()
 
