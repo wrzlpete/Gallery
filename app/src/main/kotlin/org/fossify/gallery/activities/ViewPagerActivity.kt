@@ -578,6 +578,32 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun updatePagerItems(media: MutableList<Medium>) {
+        val existingAdapter = binding.viewPager.adapter as? MyPagerAdapter
+        // Reuse the existing adapter when the current item is still present in the new
+        // media list. This preserves existing fragment instances (and their zoom state)
+        // for items that remain at the same position, while still updating metadata,
+        // adding new items, and removing deleted ones. Items that moved to a different
+        // position are destroyed and recreated by the pager (FragmentStatePagerAdapter
+        // tags fragments by position, so moving is not possible without recreation).
+        // mPos is a position in the existing adapter's (old) media list, so the
+        // current item's path must be looked up there — not in the new `media`,
+        // where the same index may point to a different item after insertions or
+        // deletions ahead of the current position.
+        if (existingAdapter != null && mPos in existingAdapter.media.indices) {
+            val currentPath = existingAdapter.media[mPos].path
+            val newPos = media.indexOfFirst { it.path == currentPath }
+            if (newPos >= 0) {
+                existingAdapter.updateMedia(media)
+                // The current item may have moved to a new position. The ViewPager
+                // updates currentItem automatically during populate(), but set it
+                // explicitly (without animation) as a safety net.
+                if (binding.viewPager.currentItem != newPos) {
+                    binding.viewPager.setCurrentItem(newPos, false)
+                }
+                return
+            }
+        }
+
         val pagerAdapter = MyPagerAdapter(this, supportFragmentManager, media)
         if (!isDestroyed) {
             pagerAdapter.shouldInitFragment = mPos < 5

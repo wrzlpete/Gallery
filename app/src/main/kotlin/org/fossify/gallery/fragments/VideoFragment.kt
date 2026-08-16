@@ -671,6 +671,18 @@ class VideoFragment : ViewPagerFragment(), TextureView.SurfaceTextureListener,
         }
     }
 
+    /**
+     * Called by the pager adapter when the media list is refreshed in-place.
+     * Updates [mMedium] with fresh metadata from the background re-scan. Video
+     * playback is not interrupted — the updated metadata will be used for any
+     * subsequent operations (extended details, position save/restore, etc.).
+     */
+    override fun updateMedium(medium: Medium) {
+        arguments?.putSerializable(MEDIUM, medium)
+        if (!::mMedium.isInitialized) return
+        mMedium = medium
+    }
+
     private fun showPlaybackSpeedPicker() {
         val fragment = PlaybackSpeedFragment()
         childFragmentManager.beginTransaction().add(fragment, fragment::class.java.simpleName)
