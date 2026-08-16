@@ -133,6 +133,8 @@ class PhotoFragment : ViewPagerFragment() {
     private var mCurrentGestureViewY = 0f
     private var mInitialZoom = 1f
     private var mHasInitialZoom = false
+    private var mUserHasZoomed = false
+    private var mIsGlideReloading = false
 
     private var mStoredShowExtendedDetails = false
     private var mStoredHideExtendedDetails = false
@@ -429,6 +431,8 @@ class PhotoFragment : ViewPagerFragment() {
 
     private fun loadImage() {
         mHasInitialZoom = false
+        mUserHasZoomed = false
+        mIsGlideReloading = false
         checkScreenDimensions()
 
         if (mMedium.isPortrait() && context != null) {
@@ -553,11 +557,20 @@ class PhotoFragment : ViewPagerFragment() {
                     dataSource: DataSource,
                     isFirstResource: Boolean
                 ): Boolean {
+                    val wasReload = mHasInitialZoom
+                    if (wasReload && mUserHasZoomed) {
+                        mIsGlideReloading = true
+                    }
                     applyProperColorMode(resource)
                     val allowZoomingImages = context?.config?.allowZoomingImages ?: true
                     binding.gesturesView.controller.settings.isZoomEnabled = mMedium.isRaw() || mCurrentRotationDegrees != 0 || allowZoomingImages == false
                     if (mIsFragmentVisible && addZoomableView) {
                         scheduleZoomableView()
+                    }
+                    if (mIsGlideReloading) {
+                        binding.gesturesView.post {
+                            mIsGlideReloading = false
+                        }
                     }
                     return false
                 }
@@ -627,9 +640,17 @@ class PhotoFragment : ViewPagerFragment() {
                     mHasInitialZoom = true
                 }
 
+                if (mIsGlideReloading && mUserHasZoomed) {
+                    return
+                }
+
                 mCurrentGestureViewZoom = state.zoom
                 mCurrentGestureViewX = state.x
                 mCurrentGestureViewY = state.y
+
+                if (state.zoom > mInitialZoom + MAX_ZOOM_EQUALITY_TOLERANCE) {
+                    mUserHasZoomed = true
+                }
             }
         })
     }
@@ -1006,6 +1027,37 @@ class PhotoFragment : ViewPagerFragment() {
             if (mWasInit && mMedium.isPortrait()) {
                 photoPortraitStripeWrapper.animate().alpha(if (isFullscreen) 0f else 1f).start()
             }
+        }
+    }
+
+    /**
+     * Called by the pager adapter when the media list is refreshed in-place.
+     *
+     * Updates [mMedium] with fresh metadata from the background re-scan while preserving
+     * the already-resolved file path (which may differ from the original when the medium
+     * was opened via a content:// URI). Only triggers a reload when the Glide signature
+     * (path + modified + size) actually changed — i.e. the file content really changed —
+     * so zoom state is preserved in the common case of identical content with refreshed
+     * DB metadata.
+     */
+    override fun updateMedium(medium: Medium) {
+        arguments?.putSerializable(MEDIUM, medium)
+        if (!mWasInit) return
+
+        val oldSignature = mMedium.getSignature()
+        val resolvedPath = mMedium.path
+        mMedium = medium
+        // Preserve the path that was resolved in onCreateView (may be a real file path
+        // resolved from a content:// URI, or a cache file path for empty content URIs).
+        if (resolvedPath != mOriginalPath) {
+            mMedium.path = resolvedPath
+        }
+
+        if (mMedium.getSignature() != oldSignature) {
+            // File content actually changed — reload to pick up the new image.
+            // This intentionally resets zoom state, which is correct because the
+            // displayed image is no longer the one the user was zooming into.
+            loadImage()
         }
     }
 
