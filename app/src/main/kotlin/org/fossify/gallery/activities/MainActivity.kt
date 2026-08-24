@@ -1275,20 +1275,40 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 it != MediaFetcher.MEDIA_STORE_CHANGED_SENTINEL
             }
 
-            // Early exit when no real media changes detected — even for forceFullScan (pull-to-refresh).
-            // Previously, forceFullScan=true would continue to the filesystem walk and MediaStore query
-            // even when getFoldersWithRecentMedia found nothing, wasting 8-12 seconds on every
-            // pull-to-refresh that found no changes. MediaStore on Android 11+ auto-indexes new media
-            // within seconds, so if getFoldersWithRecentMedia returns empty, there is genuinely
-            // nothing new. The checkLastMediaChanged poll will catch any delayed indexing.
+            // Early exit only for non-forced scans (initial load) with no MediaStore changes at all.
+            //
+            // This early exit is intentionally NARROW to avoid a bug where folders copied via adb
+            // (bypassing MediaStore) and later scanned by an external scan_file command become
+            // permanently invisible in the folder list. The previous condition used
+            // `foldersWithRecentMedia.isEmpty() || onlyVersionChanged`, which was too aggressive:
+            //
+            // 1. onlyVersionChanged early-exit: When MediaStore's version increments (meaning
+            //    MediaStore WAS modified) but no files have DATE_ADDED > lastScanTs, the sentinel
+            //    was returned and onlyVersionChanged=true caused an early exit. This skipped all
+            //    folder discovery AND advanced lastFolderScanTimestamp, making the folder
+            //    permanently invisible — future refreshes would never find it because lastScanTs
+            //    was now past the files' DATE_ADDED.
+            //
+            // 2. forceFullScan early-exit: Pull-to-refresh (forceFullScan=true) would early-exit
+            //    when getFoldersWithRecentMedia returned empty, skipping the filesystem walk
+            //    (getNewFoldersViaFilesystem) which is the reliable way to discover folders that
+            //    MediaStore doesn't know about or whose DATE_ADDED is older than lastScanTs.
+            //    This made the filesystem walk effectively dead code for pull-to-refresh.
+            //
+            // The fix: only early-exit for non-forced scans (initial load) with truly empty
+            // getFoldersWithRecentMedia (no sentinel, no recent folders). For pull-to-refresh
+            // and poll-triggered scans, always proceed to folder discovery. The filesystem walk
+            // and MediaStore query will find any new folders. The performance cost is acceptable
+            // because pull-to-refresh is user-initiated and the poll only fires when
+            // getLatestMediaId changes.
             //
             // Exception: fullVolumeScan=true (menu-based "Full Media Scan" / endboss scan). The user
             // explicitly asked for a thorough scan, so we always continue to the refresh loop and
             // folder discovery even if MediaStore reports no recent changes. The scanVolume() call
             // at the top of gotDirectories may still index files that getFoldersWithRecentMedia
             // hasn't seen yet, and the post-scan refresh will pick those up.
-            if (!fullVolumeScan && (foldersWithRecentMedia.isEmpty() || onlyVersionChanged)) {
-                logPerf("gotDirectories: no media changes detected, skipping full scan${if (onlyVersionChanged) " (version-only change)" else ""}")
+            if (!fullVolumeScan && !forceFullScan && foldersWithRecentMedia.isEmpty()) {
+                logPerf("gotDirectories: no media changes detected (non-forced scan), skipping full scan")
                 mLoadedInitialPhotos = true
                 if (config.appRunCount > 1) {
                     checkLastMediaChanged()
@@ -1724,15 +1744,36 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                         || grouping and GROUP_BY_LAST_MODIFIED_DAILY != 0
                         || grouping and GROUP_BY_LAST_MODIFIED_MONTHLY != 0
 
-                // Use pre-computed media from getMediaStoreFolderInfo when available (Android 11+)
-                // This avoids per-folder getFilesFrom() calls that do FUSE listFiles() or per-folder MediaStore queries
+                // Use pre-computed media from getMediaStoreFolderInfo when available (Android 11+).
+                // This avoids per-folder getFilesFrom() calls that do FUSE listFiles() or per-folder MediaStore queries.
+                //
+                // Fallback: if mediaByFolder has no media for this folder (e.g., the folder was
+                // discovered by the filesystem walk but MediaStore hasn't indexed its files yet,
+                // or scanFile failed), fall back to getFilesFrom which reads files directly from
+                // the filesystem via getMediaInFolder. This handles folders copied via adb without
+                // a MediaStore scan — the filesystem walk finds them, and this fallback reads
+                // their media without requiring MediaStore indexing.
                 val newMedia = if (mediaByFolder != null) {
                     val folderLower = folder.lowercase(Locale.getDefault())
-                    val media = mediaByFolder[folderLower] ?: ArrayList()
-                    if (media.isNotEmpty()) {
+                    val media = mediaByFolder[folderLower]
+                    if (media != null && media.isNotEmpty()) {
                         mLastMediaFetcher!!.sortMedia(media, sorting)
+                        media
+                    } else {
+                        mLastMediaFetcher!!.getFilesFrom(
+                            curPath = folder,
+                            isPickImage = getImagesOnly,
+                            isPickVideo = getVideosOnly,
+                            getProperDateTaken = getProperDateTaken,
+                            getProperLastModified = getProperLastModified,
+                            getProperFileSize = getProperFileSize,
+                            favoritePaths = favoritePaths,
+                            getVideoDurations = false,
+                            lastModifieds = lastModifieds,
+                            dateTakens = dateTakens,
+                            android11Files = android11Files
+                        )
                     }
-                    media
                 } else {
                     mLastMediaFetcher!!.getFilesFrom(
                         curPath = folder,

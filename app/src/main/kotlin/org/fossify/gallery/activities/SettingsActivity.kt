@@ -108,6 +108,7 @@ class SettingsActivity : SimpleActivity() {
         updateTextColors(binding.settingsHolder)
         setupClearCache()
         setupFullMediaScan()
+        setupDeepScanFolders()
         setupExportFavorites()
         setupImportFavorites()
         setupExportSettings()
@@ -802,6 +803,16 @@ class SettingsActivity : SimpleActivity() {
                 config.lastFolderScanTimestamp = 0L
                 MainActivity.pendingFullScan = true
                 finish()
+            }
+        }
+    }
+
+    private fun setupDeepScanFolders() {
+        binding.settingsDeepScanFoldersHolder.setOnClickListener {
+            if (isRPlus() && !isExternalStorageManager()) {
+                GrantAllFilesDialog(this)
+            } else {
+                startActivity(Intent(this, DeepScanFoldersActivity::class.java))
             }
         }
     }

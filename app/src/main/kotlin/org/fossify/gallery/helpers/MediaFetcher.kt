@@ -321,6 +321,46 @@ class MediaFetcher(val context: Context) {
                 }
             }
 
+            // Deep scan folders: list direct children of user-specified folders (e.g. SD card
+            // /Pictures with 700+ subfolders) to discover new subfolders that aren't in MediaStore.
+            // Unlike included folders, these don't affect visibility — they only extend the
+            // filesystem walk to look one level deeper into folders that are already known but
+            // whose children may not be. Known subfolders are skipped via knownLower (O(1)),
+            // so even with 700+ existing subfolders only the new ones trigger folderHasMedia().
+            val deepScanFolders = context.config.deepScanFolders
+            if (deepScanFolders.isNotEmpty()) {
+                context.logPerf("getNewFoldersViaFilesystem: scanning ${deepScanFolders.size} deep scan folders")
+                for (deepFolder in deepScanFolders) {
+                    if (shouldStop) break
+                    val deepFile = File(deepFolder)
+                    if (!deepFile.isDirectory) continue
+                    val listStart = SystemClock.elapsedRealtime()
+                    val children = deepFile.listFiles() ?: continue
+                    val listTime = SystemClock.elapsedRealtime() - listStart
+                    listFilesCount++
+                    if (listTime > 500) {
+                        slowListFiles.add("$deepFolder (deep scan)" to listTime)
+                    }
+                    for (child in children) {
+                        if (shouldStop) break
+                        if (!child.isDirectory) continue
+                        val childPath = child.absolutePath
+                        if (childPath.lowercase(Locale.getDefault()) in knownLower) continue
+                        if (!shouldShowHidden && child.name.startsWith('.')) continue
+                        if (excludedPaths.any { childPath.startsWith(it) }) continue
+                        if (result.any { it.lowercase(Locale.getDefault()) == childPath.lowercase(Locale.getDefault()) }) continue
+                        val fhmStart = SystemClock.elapsedRealtime()
+                        if (!folderHasMedia(child, filterMedia, shouldShowHidden)) continue
+                        folderHasMediaCount++
+                        val fhmTime = SystemClock.elapsedRealtime() - fhmStart
+                        if (fhmTime > 500) {
+                            slowListFiles.add("$childPath (deep scan folderHasMedia)" to fhmTime)
+                        }
+                        result.add(childPath)
+                    }
+                }
+            }
+
             context.logPerf("getNewFoldersViaFilesystem: $listFilesCount listFiles() calls, $folderHasMediaCount folderHasMedia() calls, ${slowListFiles.size} slow (>500ms)")
             slowListFiles.sortedByDescending { it.second }.take(10).forEach {
                 context.logPerf("getNewFoldersViaFilesystem: SLOW ${it.first} took ${it.second} ms")

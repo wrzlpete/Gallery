@@ -161,6 +161,22 @@ class Config(context: Context) : BaseConfig(context) {
         get() = prefs.getStringSet(INCLUDED_FOLDERS, HashSet<String>())!!
         set(includedFolders) = prefs.edit().remove(INCLUDED_FOLDERS).putStringSet(INCLUDED_FOLDERS, includedFolders).apply()
 
+    fun addDeepScanFolder(path: String) {
+        val curr = HashSet<String>(deepScanFolders)
+        curr.add(path)
+        deepScanFolders = curr
+    }
+
+    fun removeDeepScanFolder(path: String) {
+        val curr = HashSet<String>(deepScanFolders)
+        curr.remove(path)
+        deepScanFolders = curr
+    }
+
+    var deepScanFolders: MutableSet<String>
+        get() = prefs.getStringSet(DEEP_SCAN_FOLDERS, HashSet<String>())!!
+        set(deepScanFolders) = prefs.edit().remove(DEEP_SCAN_FOLDERS).putStringSet(DEEP_SCAN_FOLDERS, deepScanFolders).apply()
+
     var autoplayVideos: Boolean
         get() = prefs.getBoolean(AUTOPLAY_VIDEOS, false)
         set(autoplayVideos) = prefs.edit().putBoolean(AUTOPLAY_VIDEOS, autoplayVideos).apply()

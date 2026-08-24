@@ -44,6 +44,7 @@ const val SHOW_ALL = "show_all"                           // display images and 
 const val HIDE_FOLDER_TOOLTIP_SHOWN = "hide_folder_tooltip_shown"
 const val EXCLUDED_FOLDERS = "excluded_folders"
 const val INCLUDED_FOLDERS = "included_folders"
+const val DEEP_SCAN_FOLDERS = "deep_scan_folders"
 const val ALBUM_COVERS = "album_covers"
 const val HIDE_SYSTEM_UI = "hide_system_ui"
 const val DELETE_EMPTY_FOLDERS = "delete_empty_folders"
