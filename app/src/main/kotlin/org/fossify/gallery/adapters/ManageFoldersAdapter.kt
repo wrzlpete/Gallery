@@ -12,10 +12,16 @@ import org.fossify.commons.views.MyRecyclerView
 import org.fossify.gallery.databinding.ItemManageFolderBinding
 import org.fossify.gallery.extensions.config
 
+enum class ManageFolderType {
+    EXCLUDED, INCLUDED, DEEP_SCAN
+}
+
 class ManageFoldersAdapter(
-    activity: BaseSimpleActivity, var folders: ArrayList<String>, val isShowingExcludedFolders: Boolean, val listener: RefreshRecyclerViewListener?,
+    activity: BaseSimpleActivity, var folders: ArrayList<String>, val folderType: ManageFolderType, val listener: RefreshRecyclerViewListener?,
     recyclerView: MyRecyclerView, itemClick: (Any) -> Unit
 ) : MyRecyclerViewAdapter(activity, recyclerView, itemClick) {
+
+    val isShowingExcludedFolders = folderType == ManageFolderType.EXCLUDED
 
     private val config = activity.config
 
@@ -115,10 +121,10 @@ class ManageFoldersAdapter(
 
         getSelectedItems().forEach {
             removeFolders.add(it)
-            if (isShowingExcludedFolders) {
-                config.removeExcludedFolder(it)
-            } else {
-                config.removeIncludedFolder(it)
+            when (folderType) {
+                ManageFolderType.EXCLUDED -> config.removeExcludedFolder(it)
+                ManageFolderType.INCLUDED -> config.removeIncludedFolder(it)
+                ManageFolderType.DEEP_SCAN -> config.removeDeepScanFolder(it)
             }
         }
 

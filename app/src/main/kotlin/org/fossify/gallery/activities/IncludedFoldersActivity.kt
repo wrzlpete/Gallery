@@ -7,6 +7,7 @@ import org.fossify.commons.extensions.viewBinding
 import org.fossify.commons.helpers.NavigationIcon
 import org.fossify.commons.interfaces.RefreshRecyclerViewListener
 import org.fossify.gallery.R
+import org.fossify.gallery.adapters.ManageFolderType
 import org.fossify.gallery.adapters.ManageFoldersAdapter
 import org.fossify.gallery.databinding.ActivityManageFoldersBinding
 import org.fossify.gallery.extensions.config
@@ -43,7 +44,7 @@ class IncludedFoldersActivity : SimpleActivity(), RefreshRecyclerViewListener {
             setTextColor(getProperTextColor())
         }
 
-        val adapter = ManageFoldersAdapter(this, folders, false, this, binding.manageFoldersList) {}
+        val adapter = ManageFoldersAdapter(this, folders, ManageFolderType.INCLUDED, this, binding.manageFoldersList) {}
         binding.manageFoldersList.adapter = adapter
     }
 
