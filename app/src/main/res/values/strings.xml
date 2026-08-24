@@ -243,6 +243,9 @@
     <string name="full_media_scan">Full media scan</string>
     <string name="full_media_scan_summary">Search all storage for media folders. Use if folders are missing.</string>
     <string name="full_media_scan_confirmation">This will scan all storage for media files and may take a while. Continue?</string>
+    <string name="deep_scan_folders">Deep scan folders</string>
+    <string name="deep_scan_folders_summary">Folders whose subfolders are scanned for new media on pull-to-refresh. Use for folders like SD card Pictures where new subfolders are added externally.</string>
+    <string name="deep_scan_folders_placeholder">No deep scan folders configured. Add folders here whose subfolders should be checked for new media on pull-to-refresh (e.g. an SD card Pictures folder where new subfolders are copied externally).</string>
 
     <!-- Setting sections -->
     <string name="debug">Debug</string>
