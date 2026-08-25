@@ -269,11 +269,14 @@ class MediaFetcher(val context: Context) {
                     if (shouldStop) break
                     val childPath = child.absolutePath
                     val childPathLower = childPath.lowercase(Locale.getDefault())
-                    // Check all no-I/O filters BEFORE isDirectory() to avoid 700+ stat() calls
-                    // through FUSE on known folders. isDirectory() triggers a stat() syscall that
-                    // takes ~125ms per call on a cold/sleeping SD card. knownLower only contains
-                    // directory paths (from directoryDB.getAll()), so paths in it are definitely
-                    // directories — no stat needed to confirm.
+                    // Check no-I/O filters before isDirectory() to avoid unnecessary stat()
+                    // calls on known folders. isDirectory() triggers a stat() syscall through
+                    // FUSE. knownLower only contains directory paths (from directoryDB.getAll()),
+                    // so paths in it are definitely directories — no stat needed to confirm.
+                    // Note: the dominant cost on cold SD cards is listFiles() itself, whose
+                    // FUSE readdir handler stats every entry internally regardless of this
+                    // ordering. This reorder only avoids the additional isDirectory() stat
+                    // on known children in the child loop.
                     if (childPathLower in knownLower) continue
                     if (!shouldShowHidden && child.name.startsWith('.')) continue
                     if (excludedPaths.any { childPath.startsWith(it) }) continue
