@@ -1654,6 +1654,12 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             val mediaStoreAllPaths = mediaStoreFolderInfo.allParentPaths
             val newFoldersFromFS = mediaStoreFolderInfo.newFolders
             val mediaByFolder = mediaStoreFolderInfo.mediaByFolder
+            // Set of lowercase paths for folders discovered by the filesystem walk / MediaStore
+            // new-folder query. Used to limit the getFilesFrom fallback to only these folders —
+            // folders from getLatestFileFolders() that have no direct media (e.g. a parent folder
+            // like /Pictures) should NOT trigger the fallback, as it causes a slow getFilesFrom
+            // call that returns 0 media (7s on a cold SD card).
+            val newFoldersFromFSLower = newFoldersFromFS.map { it.lowercase(Locale.getDefault()) }.toHashSet()
             logPerf("gotDirectories: new folder discovery took ${SystemClock.elapsedRealtime() - stepStart} ms, found ${newFoldersFromFS.size} new folders")
 
             stepStart = SystemClock.elapsedRealtime()
@@ -1759,7 +1765,11 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                     if (media != null && media.isNotEmpty()) {
                         mLastMediaFetcher!!.sortMedia(media, sorting)
                         media
-                    } else {
+                    } else if (folderLower in newFoldersFromFSLower) {
+                        // Fallback only for folders discovered by the filesystem walk or MediaStore
+                        // new-folder query. These might not be in mediaByFolder if scanFile failed
+                        // or MediaStore hasn't indexed their files yet. Read files directly from
+                        // the filesystem via getFilesFrom → getMediaInFolder.
                         mLastMediaFetcher!!.getFilesFrom(
                             curPath = folder,
                             isPickImage = getImagesOnly,
@@ -1773,6 +1783,12 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                             dateTakens = dateTakens,
                             android11Files = android11Files
                         )
+                    } else {
+                        // Not a new folder from discovery (e.g. from getLatestFileFolders()),
+                        // and mediaByFolder has no media for it — skip without a slow getFilesFrom
+                        // call. This avoids 7s delays on cold SD cards for parent folders like
+                        // /Pictures that have no direct media but appear in getLatestFileFolders().
+                        ArrayList()
                     }
                 } else {
                     mLastMediaFetcher!!.getFilesFrom(
