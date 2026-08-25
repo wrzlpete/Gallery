@@ -185,6 +185,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
     private var mPendingRestart = false
     private var mPendingFullVolumeScan = false
     private var mPendingFilesystemScan = true
+    private var mRunningFilesystemScan = true
     private var mMediaScanInProgress = false
     @Volatile private var mMediaScanCompleted = false
     private var mWasDefaultFolderChecked = false
@@ -658,6 +659,14 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 mDirsLoadStartTime = 0L
                 // Fall through to start a new scan
             } else if (forceRestart && source != "pull-to-refresh") {
+                // If a filesystem scan is running and the incoming request is a non-filesystem
+                // scan (e.g. a background poll), drop the incoming request — the running scan
+                // is strictly more thorough and will find everything the poll would, plus do
+                // the filesystem walk. Interrupting it would silently downgrade the scan.
+                if (mRunningFilesystemScan && !filesystemScan) {
+                    logPerf("getDirectories: filesystem scan running, dropping non-filesystem request from '$source'")
+                    return
+                }
                 logPerf("getDirectories: scan already running for ${elapsed} ms, marking pending restart")
                 mShouldStopFetching = true
                 mPendingRestart = true
@@ -676,6 +685,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         mShouldStopFetching = false
         mIsGettingDirs = true
         mPendingRestart = false
+        mRunningFilesystemScan = filesystemScan
         mDirsLoadStartTime = SystemClock.elapsedRealtime()
         mScanGeneration++
         val generation = mScanGeneration
