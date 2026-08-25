@@ -267,12 +267,18 @@ class MediaFetcher(val context: Context) {
                 }
                 for (child in children) {
                     if (shouldStop) break
-                    if (!child.isDirectory) continue
                     val childPath = child.absolutePath
-                    if (childPath.lowercase(Locale.getDefault()) in knownLower) continue
+                    val childPathLower = childPath.lowercase(Locale.getDefault())
+                    // Check all no-I/O filters BEFORE isDirectory() to avoid 700+ stat() calls
+                    // through FUSE on known folders. isDirectory() triggers a stat() syscall that
+                    // takes ~125ms per call on a cold/sleeping SD card. knownLower only contains
+                    // directory paths (from directoryDB.getAll()), so paths in it are definitely
+                    // directories — no stat needed to confirm.
+                    if (childPathLower in knownLower) continue
                     if (!shouldShowHidden && child.name.startsWith('.')) continue
                     if (excludedPaths.any { childPath.startsWith(it) }) continue
-                    if (result.any { it.lowercase(Locale.getDefault()) == childPath.lowercase(Locale.getDefault()) }) continue
+                    if (result.any { it.lowercase(Locale.getDefault()) == childPathLower }) continue
+                    if (!child.isDirectory) continue
                     val fhmStart = SystemClock.elapsedRealtime()
                     if (!folderHasMedia(child, filterMedia, shouldShowHidden)) continue
                     folderHasMediaCount++
@@ -303,12 +309,13 @@ class MediaFetcher(val context: Context) {
                     }
                     for (child in children) {
                         if (shouldStop) break
-                        if (!child.isDirectory) continue
                         val childPath = child.absolutePath
-                        if (childPath.lowercase(Locale.getDefault()) in knownLower) continue
+                        val childPathLower = childPath.lowercase(Locale.getDefault())
+                        if (childPathLower in knownLower) continue
                         if (!shouldShowHidden && child.name.startsWith('.')) continue
                         if (excludedPaths.any { childPath.startsWith(it) }) continue
-                        if (result.any { it.lowercase(Locale.getDefault()) == childPath.lowercase(Locale.getDefault()) }) continue
+                        if (result.any { it.lowercase(Locale.getDefault()) == childPathLower }) continue
+                        if (!child.isDirectory) continue
                         val fhmStart = SystemClock.elapsedRealtime()
                         if (!folderHasMedia(child, filterMedia, shouldShowHidden)) continue
                         folderHasMediaCount++
@@ -343,12 +350,13 @@ class MediaFetcher(val context: Context) {
                     }
                     for (child in children) {
                         if (shouldStop) break
-                        if (!child.isDirectory) continue
                         val childPath = child.absolutePath
-                        if (childPath.lowercase(Locale.getDefault()) in knownLower) continue
+                        val childPathLower = childPath.lowercase(Locale.getDefault())
+                        if (childPathLower in knownLower) continue
                         if (!shouldShowHidden && child.name.startsWith('.')) continue
                         if (excludedPaths.any { childPath.startsWith(it) }) continue
-                        if (result.any { it.lowercase(Locale.getDefault()) == childPath.lowercase(Locale.getDefault()) }) continue
+                        if (result.any { it.lowercase(Locale.getDefault()) == childPathLower }) continue
+                        if (!child.isDirectory) continue
                         val fhmStart = SystemClock.elapsedRealtime()
                         if (!folderHasMedia(child, filterMedia, shouldShowHidden)) continue
                         folderHasMediaCount++
